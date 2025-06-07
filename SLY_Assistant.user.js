@@ -2647,7 +2647,9 @@ async function sendAndConfirmTx(txSerialized, lastValidBlockHeight, txHash, flee
             updateFleetState(fleet, 'Mining Stop')
 
             //let txResult = await txSignAndSend(tx2, fleet, 'STOP MINING', 100);
-            let txResult = await txSignAndSend([tx1,tx2], fleet, 'STOP MINING', 100);
+			// Temp fix : Break down in 2 since it seems too much for batching
+            let txResult = await txSignAndSend([tx1], fleet, 'fleetStateHandler', 100);
+			let txResult = await txSignAndSend([tx2], fleet, 'STOP MINING', 100);
 
             //await wait(2000);
             cLog(1,`${FleetTimeStamp(fleet.label)} Idle 💤`);
