@@ -865,8 +865,6 @@
         let remainingData = fleetAcctInfo.data.subarray(523);
         let fleetState = 'Unknown';
         let extra = null;
-        console.log(fleetAcctInfo);
-        console.log(remainingData);
 
 	if(fleet && fleet.exitWarpSubwarpPending) {
 		fleetState = 'Idle';
@@ -2649,7 +2647,7 @@ async function sendAndConfirmTx(txSerialized, lastValidBlockHeight, txHash, flee
             //let txResult = await txSignAndSend(tx2, fleet, 'STOP MINING', 100);
 			// Temp fix : Break down in 2 since it seems too much for batching
             let txResult = await txSignAndSend([tx1], fleet, 'fleetStateHandler', 100);
-			let txResult = await txSignAndSend([tx2], fleet, 'STOP MINING', 100);
+			txResult = await txSignAndSend([tx2], fleet, 'STOP MINING', 100);
 
             //await wait(2000);
             cLog(1,`${FleetTimeStamp(fleet.label)} Idle 💤`);
