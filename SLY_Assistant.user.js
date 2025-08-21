@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLY Assistant HOLOSIM
 // @namespace    http://tampermonkey.net/
-// @version      0.7.24
+// @version      0.7.32
 // @description  try to take over the world!
 // @author       SLY w/ Contributions by niofox, SkyLove512, anthonyra, [AEP] Valkynen, Risingson, Swift42, Kayuu
 // @match        https://*.holosim.staratlas.com/
@@ -40,7 +40,8 @@
 	const cargoProgramPK = new solanaWeb3.PublicKey('Cargo8a1e6NkGyrjy4BQEW4ASGKs9KSyDyUrXMfpJoiH');
 	const profileFactionProgramPK = new solanaWeb3.PublicKey('pFACSRuobDmvfMKq1bAzwj27t6d2GJhSCHb1VcfnRmq');
     */
-    const sageProgramPK = new solanaWeb3.PublicKey('SAgeTraQfBMdvGVDJYoEvjnbq5szW7RJPi6obDTDQUF');
+
+    const sageProgramPK = new solanaWeb3.PublicKey('SAgEeT8u14TE69JXtanGSgNkEdoPUcLabeyZD2uw8x9');
     const profileProgramPK = new solanaWeb3.PublicKey('PprofUW1pURCnMW2si88GWPXEEK3Bvh9Tksy8WtnoYJ');
     const cargoProgramPK = new solanaWeb3.PublicKey('CArGoi989iv3VL3xArrJXmYYDNhjwCX5ey5sY5KKwMG');
     const profileFactionProgramPK = new solanaWeb3.PublicKey('pFACzkX2eSpAjDyEohD6i3VRJvREtH9ynbtM1DwVFsj');
@@ -71,7 +72,7 @@
 
 	let globalSettings;
 	const settingsGmKey = 'globalSettings';
-	const scanningPatterns = ['square', 'ring', 'spiral', 'up', 'down', 'left', 'right', 'sly'];
+	const scanningPatterns = ['square', 'ring', 'spiral', 'up', 'down', 'left', 'right', 'sly', 'auto(1)', 'auto(1+)', 'auto(1,2hv)', 'auto(1,2hv+)', 'auto(1,2hv++)'];
 	await loadGlobalSettings();
 
 	let errorLog = [];
@@ -125,6 +126,11 @@
 		if(typeof value == "string")	return value;
 		return defaultValue;
 	}
+	function parseStringDefaultForced(value, defaultValue) {
+		if(typeof value == "string" && value.length)	return value;
+		return defaultValue;
+	}
+
 
 	function parseIntKMG(val) {
 		let multiplier = val.substr(-1).toLowerCase();
@@ -167,6 +173,11 @@
 			queueExitWarpSubwarp: parseBoolDefault(globalSettings.queueExitWarpSubwarp, false),
 
 			emailInterface: parseStringDefault(globalSettings.emailInterface,''),
+
+			influxURL: parseStringDefault(globalSettings.influxURL,''),
+			influxAuth: parseStringDefault(globalSettings.influxAuth,''),
+
+			scanMapURL: parseStringDefaultForced(globalSettings.scanMapURL,'https://slya.de/sdu.json'),
 
 			emailFleetIxErrors: parseBoolDefault(globalSettings.emailFleetIxErrors, true),
 			emailCraftIxErrors: parseBoolDefault(globalSettings.emailCraftIxErrors, true),
@@ -479,14 +490,21 @@
 	let currentFee = globalSettings.priorityFee; //autofee
 
 	let sageProgram = new BrowserAnchor.anchor.Program(sageIDL, sageProgramPK, anchorProvider);
+	let game = await sageProgram.account;
+	console.log("account");
+	console.log(game);
+	let allGames = await sageProgram.account.game.all();
+	console.log("GAMES");
+	console.log(allGames);
 	let [sageGameAcct] = await sageProgram.account.game.all();
+	console.log(sageGameAcct.publicKey.toString());
+	let cargoStatsDefinitionAcctPK = sageGameAcct.account.cargo.statsDefinition;
     let [sageSDUTrackerAcct] = await sageProgram.account.surveyDataUnitTracker.all();
     let [fleetacct] = await sageProgram.account.fleet.all();
     console.log(sageProgram);
     console.log(sageGameAcct);
     console.log(sageSDUTrackerAcct);
     console.log(fleetacct);
-	let cargoStatsDefinitionAcctPK = sageGameAcct.account.cargo.statsDefinition;
 	
 	let profileProgram = new BrowserAnchor.anchor.Program(profileIDL, profileProgramPK, anchorProvider);
     let pointsProgram = new BrowserAnchor.anchor.Program(pointsIDL, pointsProgramId, anchorProvider);
@@ -602,6 +620,57 @@
         let solanaClock = await solanaReadConnection.getAccountInfo(new solanaWeb3.PublicKey('SysvarC1ock11111111111111111111111111111111'));
         let solanaTime = solanaClock.data.readBigInt64LE(8 * 4);
     }
+
+    let influxLastStarbaseCargoHoldUpdates = [];
+    async function influxStarbaseCargoHold(starbaseX,starbaseY,cargoHoldKeyOrTokens) {
+
+	if(!globalSettings.influxURL.length) return;
+
+	let cargoHoldTokens = null;
+
+	let starbaseName = validTargets.find(target => (target.x + ',' + target.y) == (starbaseX + ',' + starbaseY))?.name;
+
+	let lastUpdate = influxLastStarbaseCargoHoldUpdates.find(item => item.x == starbaseX && item.y == starbaseY);
+	let lastUpdateTimestamp = 0;
+
+	if(!lastUpdate) {
+		lastUpdateTimestamp = 0;
+		influxLastStarbaseCargoHoldUpdates.push({ x: starbaseX, y: starbaseY, timestamp: Date.now() });
+	}
+	else
+	{
+		lastUpdateTimestamp = lastUpdate.timestamp;
+	}
+
+	if(lastUpdateTimestamp < Date.now() - 60*15*1000) { // log new data after 15 minutes
+
+		if(lastUpdate) lastUpdate.timestamp = Date.now();
+
+		if(cargoHoldKeyOrTokens.constructor == solanaWeb3.PublicKey) {
+			// we got public key of the cargo hold and read the token accounts by ourselves
+			cargoHoldTokens = await solanaReadConnection.getParsedTokenAccountsByOwner(cargoHoldKeyOrTokens, {programId: tokenProgramPK});
+		} else {
+			// we got an object, so we got the full token accounts
+			cargoHoldTokens = cargoHoldKeyOrTokens;
+		}
+
+		let influxStr = '';
+		let starbaseName = validTargets.find(target => (target.x + ',' + target.y) == starbaseX + ',' + starbaseY )?.name;
+
+		let count=0;
+		for(let curToken of cargoHoldTokens.value) {
+			let mint = curToken.account.data.parsed.info.mint;
+			let rssName = cargoItems.find(r => r.token == mint)?.name;
+			let amount = curToken.account.data.parsed.info.tokenAmount.uiAmount ? curToken.account.data.parsed.info.tokenAmount.uiAmount : 0;
+			if(rssName) {
+				influxStr += (count ? "\n" : "") + `starbase,starbase=${influxEscape(starbaseName)},sectorX=${starbaseX},sectorY=${starbaseY},rss=${influxEscape(rssName)} curAmount=${amount}`;
+				count++;
+			}
+		}
+		if(count) await sendToInflux(influxStr);
+	}
+    }
+
 /*
     async function getCargoTypeSize(cargoType) {
         let cargoTypeAcct = await solanaReadConnection.getAccountInfo(cargoType.publicKey);
@@ -870,12 +939,20 @@
 		fleetState = 'Idle';
 		let sector = null;
 		if(fleet.exitWarpSubwarpPending == 1) sector = sageProgram.coder.types.decode('MoveWarp', remainingData.subarray(1));
-		if(fleet.exitWarpSubwarpPending == 2) { 
+		if(fleet.exitWarpSubwarpPending == 2) sector = sageProgram.coder.types.decode('MoveSubwarp', remainingData.subarray(1));
+		if(sector.toSector) { // only continue if there is a target sector. Otherwise we will assume a RPC mismatch and reset the pending state (after waiting some time to be sure)
+			fleetState = 'Idle';
+		if(fleet.exitWarpSubwarpPending == 2) {
 			sector = sageProgram.coder.types.decode('MoveSubwarp', remainingData.subarray(1));
 			fleet.exitSubwarpWillBurnFuel = sector.fuelExpenditure.toNumber();
 		}
 		extra = [sector.toSector[0].toNumber(), sector.toSector[1].toNumber()];
 		return [fleetState, extra];
+		} else {
+			cLog(1, `${FleetTimeStamp(fleet.label)} Exit warp/subwarp was pending, but no target sector found, resetting pending state`);
+			logError('Exit warp/subwarp was pending, but no target sector found, resetting pending state', fleet.label);
+			fleet.exitWarpSubwarpPending = 0;
+		}
 	}
 
         switch(remainingData[0]) {
@@ -1425,7 +1502,7 @@ async function signatureStatusHandler() {
 			// If something goes wrong, we reject each request. If a promise of the queue was already resolved in the "try" block, the reject does (correctly) nothing and won't throw an error			
 			logError('Error: Rejecting all signature checks - ' + error);
 			for (const req of currentHashes) {
-				req.reject({err: error});
+				req.reject(err);
 			}
 		}
 	}
@@ -1444,6 +1521,7 @@ async function sendAndConfirmTx(txSerialized, lastValidBlockHeight, txHash, flee
 			cLog(3,`${FleetTimeStamp(fleet.label)} <${opName}>`,(retryCount > 0 ? 'TRYING 🌐 ' : '') + 'txHash', txHash, `/ last valid block`, lastValidBlockHeight, `/ cur block`, curBlockHeight);
 			if (!txHash) return {txHash, confirmation: {name: 'TransactionExpiredBlockheightExceededError'}};
 		}
+		try {
 		const signatureStatus = await requestSignatureStatus(txHash);
 		if (signatureStatus.value && ['confirmed','finalized'].includes(signatureStatus.value.confirmationStatus)) {
 			cLog(3,`${FleetTimeStamp(fleet.label)} <${opName}> SIGNATURE FOUND ✅`);
@@ -1451,6 +1529,9 @@ async function sendAndConfirmTx(txSerialized, lastValidBlockHeight, txHash, flee
 		} else if (signatureStatus.err) {
 			cLog(3,`${FleetTimeStamp(fleet.label)} <${opName}> Err`,signatureStatus.err);
 			return {txHash, confirmation: signatureStatus}
+		}
+		} catch(err) {
+			cLog(1,`${FleetTimeStamp(fleet.label)} <${opName}> Signature exception:`,err);
 		}
 		curBlockHeight = await localGetEpochInfo(fleet); // todo: if for some reason the request of the block height takes a very long time (e.g. 20 seconds) and the block height is near the block limit, it is possible that the loop will exit without doing a final signature check.
 		retryCount++;
@@ -2227,6 +2308,10 @@ async function sendAndConfirmTx(txSerialized, lastValidBlockHeight, txHash, flee
 					let starbasePlayerCargoHold = starbasePlayerCargoHolds.find(item => item.account.openTokenAccounts > 0);
 					starbasePlayerCargoHold = starbasePlayerCargoHold ? starbasePlayerCargoHold.publicKey : starbasePlayerCargoHolds.length > 0 ? starbasePlayerCargoHolds[0].publicKey : await execCreateCargoPod(fleet, dockCoords);
 
+					if(!fleet.state.includes('ERROR')) {
+						await influxStarbaseCargoHold(starbaseX,starbaseY,starbasePlayerCargoHold);
+					}
+
 					let [starbaseCargoToken] = await BrowserAnchor.anchor.web3.PublicKey.findProgramAddressSync(
 							[
 									starbasePlayerCargoHold.toBuffer(),
@@ -2288,13 +2373,29 @@ async function sendAndConfirmTx(txSerialized, lastValidBlockHeight, txHash, flee
 						txResult = await txSignAndSend(tx, fleet, 'UNLOAD', 100);
 					}
 					resolve(txResult);
+
+					if(globalSettings.influxURL.length) {
+						let starbaseName = validTargets.find(target => (target.x + ',' + target.y) == (starbaseX + ',' + starbaseY))?.name;
+						let rssName = cargoItems.find(r => r.token == tokenMint)?.name;
+						const fleetPK = fleet.publicKey.toString();
+						const fleetSavedData = await GM.getValue(fleetPK, '{}');
+						const fleetParsedData = JSON.parse(fleetSavedData);
+						const assignment = fleetParsedData.assignment;
+						let loadType = 'cargo_out';
+						if(fleetCargoPod == fleet.fuelTank) loadType = 'fuel_out';
+						if(fleetCargoPod == fleet.ammoBank) loadType = 'ammo_out';
+						await sendToInflux(`fleetrss,fleet=${influxEscape(fleet.label)},starbase=${influxEscape(starbaseName)},sectorX=${starbaseX},sectorY=${starbaseY},rss=${influxEscape(rssName)},assignment=${assignment},type=${loadType} amount=${amount}`);
+					}
+
 			});
 	}
 
 	async function createScannerPDAs(fleet) {
 		cLog(2,`${FleetTimeStamp(fleet.label)} Maintaining Scanner PDAs`);
 		await getAccountInfo(fleet.label, 'fleet SDU token', fleet.sduToken) || await createPDA(fleet.sduToken, fleet.cargoHold, new solanaWeb3.PublicKey(sduItem.token), fleet);
+		if(fleet.scanCost > 0) {
 		await getAccountInfo(fleet.label, 'fleet food token', fleet.foodToken) || await createPDA(fleet.foodToken, fleet.cargoHold, new solanaWeb3.PublicKey(foodItem.token), fleet);
+		}
 		await getAccountInfo(fleet.label, 'fleet fuel token', fleet.fuelToken) || await createPDA(fleet.fuelToken, fleet.fuelTank, new solanaWeb3.PublicKey(fuelItem.token), fleet);
 	}
 
@@ -2318,6 +2419,11 @@ async function sendAndConfirmTx(txSerialized, lastValidBlockHeight, txHash, flee
             for (let cargoHold of starbasePlayerCargoHolds) {
                 if (cargoHold.account && cargoHold.account.openTokenAccounts > 0) {
                     let cargoHoldTokens = await solanaReadConnection.getParsedTokenAccountsByOwner(cargoHold.publicKey, {programId: tokenProgramPK});
+
+                    if(!fleet.state.includes('ERROR')) {
+			await influxStarbaseCargoHold(starbaseX,starbaseY,cargoHoldTokens);
+                    }
+
                     let cargoHoldFound = cargoHoldTokens.value.find(item => item.account.data.parsed.info.mint === tokenMint && item.account.data.parsed.info.tokenAmount.uiAmount >= amount);
                     if (cargoHoldFound) {
                         starbasePlayerCargoHold = cargoHold;
@@ -2409,6 +2515,20 @@ async function sendAndConfirmTx(txSerialized, lastValidBlockHeight, txHash, flee
 			else txResult = {name: "NotEnoughResource"};
 
 			resolve(txResult);
+
+			if(globalSettings.influxURL.length && amount > 0) {
+				let starbaseName = validTargets.find(target => (target.x + ',' + target.y) == (starbaseX + ',' + starbaseY))?.name;
+				let rssName = cargoItems.find(r => r.token == tokenMint)?.name;
+				const fleetPK = fleet.publicKey.toString();
+				const fleetSavedData = await GM.getValue(fleetPK, '{}');
+				const fleetParsedData = JSON.parse(fleetSavedData);
+				const assignment = fleetParsedData.assignment;
+				let loadType = 'cargo_in';
+				if(cargoPodTo == fleet.fuelTank) loadType = 'fuel_in';
+				if(cargoPodTo == fleet.ammoBank) loadType = 'ammo_in';
+				await sendToInflux(`fleetrss,fleet=${influxEscape(fleet.label)},starbase=${influxEscape(starbaseName)},sectorX=${starbaseX},sectorY=${starbaseY},rss=${influxEscape(rssName)},assignment=${assignment},type=${loadType} amount=${amount}`);
+			}
+
 		});
 	}
 
@@ -2450,6 +2570,121 @@ async function sendAndConfirmTx(txSerialized, lastValidBlockHeight, txHash, flee
             resolve(txResult);
         });
     }
+	
+	async function forceDropFleetCargo(fleet, cargoType, tokenFrom, tokenMint)
+	{
+		const fleetShips = hr.FleetShips.findAddress(Ir, Fr);
+		let tx1 = { instruction: await sageProgram.methods.forceDropFleetCargo({keyIndex: new BrowserAnchor.anchor.BN(userProfileKeyIdx)}).accountsStrict({
+				fleet: fleet,
+				fleetShips: fleetShips[0],
+				cargoPod: fleet.cargoHold,
+				cargoType: cargoType.publicKey,
+				cargoStatsDefinition: sageGameAcct.account.cargo.statsDefinition,
+				gameId: sageGameAcct.publicKey,
+				tokenFrom: tokenFrom,
+				tokenMint: tokenMint,
+				cargoProgram: cargoProgramPK,
+				tokenProgram: tokenProgAddy
+			}).instruction()}
+		
+		cLog(1,`${FleetTimeStamp(fleet.label)} Respawn`);
+		updateFleetState(fleet, 'Respawn')
+
+		let txResult = await txSignAndSend([tx1], fleet, 'Respawn', 100);
+
+		//await wait(2000);
+		cLog(1,`${FleetTimeStamp(fleet.label)} Idle 💤`);
+		updateFleetState(fleet, 'Idle');
+
+		resolve(txResult);
+	}
+	
+	async function forceDropFleetCargoIfExists(fleet, resourceToken)
+	{
+		let fleetCurrentCargo = await solanaReadConnection.getParsedTokenAccountsByOwner(fleet.cargoHold, {programId: tokenProgramPK});
+		console.log(fleetCurrentCargo);
+		if(fleetCurrentCargo.value.length > 0) {
+			for(const {mint, accountAddress} of [...fleetCurrentCargo.values].filter(cr => cr.accountAddress))
+			{
+				const res = resourceToken.find(res => res.mint === mint);
+				if(res)
+				{
+					await forceDropFleetCargo(fleet, res. accountAddress, mint);
+				}
+			}
+		}
+
+		const {mint, accountAddress} = fleet.fuelTank;
+		let res = resourceToken.find(res => res.mint === mint);
+		if(res)
+		{
+			await forceDropFleetCargo(fleet, res, accountAddress, mint)
+		}
+		
+		const {mint2, accountAddress2} = fleet.ammoBank;
+		res = resourceToken.find(res => res.mint === mint);
+		if(res)
+		{
+			await forceDropFleetCargo(fleet, res, accountAddress2, mint2)
+		}
+		
+	}
+	
+	async function execRespawnToLoadingBay(fleet)
+	{
+		const cargoTypes = await cargoProgram.account.cargoType.all([
+			{
+				memcmp: {
+					offset: 108,//75,
+					bytes: seq58,
+				},
+			},
+			{
+				memcmp: {
+					offset: 9,
+					bytes: cargoStatsDefinitionAcct.publicKey.toBase58()
+				}
+			},
+		]);
+
+		await forceDropFleetCargoIfExists(fleet, cargoTypes.values());
+		return new Promise(async resolve => {
+			let targetX = fleet.starbaseCoord.split(',')[0].trim();
+            let targetY = fleet.starbaseCoord.split(',')[1].trim();
+			let starbase = await getStarbaseFromCoords(targetX, targetY);
+			let starbasePlayer = await getStarbasePlayer(userProfileAcct,starbase.publicKey);
+			
+			let tx1 = { instruction: await sageProgram.methods.respawnToLoadingBay({keyIndex: new BrowserAnchor.anchor.BN(userProfileKeyIdx)}).accountsStrict({
+                    gameFleetAndOwner: {
+                        fleetAndOwner: {
+                            fleet: fleet.publicKey,
+                            owningProfile: userProfileAcct,
+                            owningProfileFaction: userProfileFactionAcct.publicKey,
+                            key: userPublicKey
+                        },
+                        gameId: sageGameAcct.publicKey
+                    },
+					starbaseAndStarbasePlayer: {
+						starbase: starbase.publicKey,
+						starbasePlayer: starbasePlayer.publicKey
+					},
+					cargoHold: fleet.cargoHold,
+					fuelTank: fleet.fuelTank,
+					ammoBank: fleet.ammoBank
+				}).instruction()}
+			
+			cLog(1,`${FleetTimeStamp(fleet.label)} Respawn`);
+            updateFleetState(fleet, 'Respawn')
+
+            let txResult = await txSignAndSend([tx1], fleet, 'Respawn', 100);
+
+            //await wait(2000);
+            cLog(1,`${FleetTimeStamp(fleet.label)} Idle 💤`);
+            updateFleetState(fleet, 'Idle');
+
+            resolve(txResult);
+		});
+	}
 
     async function execStopMining(fleet, sageResource, sageResourceAcctInfo, mineItem, resourceToken) {
         return new Promise(async resolve => {
@@ -2654,6 +2889,35 @@ async function sendAndConfirmTx(txSerialized, lastValidBlockHeight, txHash, flee
             updateFleetState(fleet, 'Idle');
 
             resolve(txResult);
+
+            if(!fleet.state.includes('ERROR') && txResult && txResult.meta && globalSettings.influxURL.length) {
+		let postTokenBalances = txResult.meta.postTokenBalances;
+		let preTokenBalances = txResult.meta.preTokenBalances;
+		let preFoodCnt = 0;
+		let postFoodCnt = 0;
+		let preAmmoCnt = 0;
+		let postAmmoCnt = 0;
+		let preRssCnt = 0;
+		let postRssCnt = 0;
+		for (let bal of preTokenBalances) {
+			if (bal.mint == resourceToken.toString() && bal.owner==fleet.cargoHold) { preRssCnt = bal.uiTokenAmount.uiAmount; }
+			if (bal.mint == sageGameAcct.account.mints.food.toString()) { preFoodCnt = bal.uiTokenAmount.uiAmount; }
+			if (bal.mint == sageGameAcct.account.mints.ammo.toString()) { preAmmoCnt = bal.uiTokenAmount.uiAmount; }
+		}
+		for (let bal of postTokenBalances) {
+			if (bal.mint == resourceToken.toString() && bal.owner==fleet.cargoHold) { postRssCnt = bal.uiTokenAmount.uiAmount; }
+			if (bal.mint == sageGameAcct.account.mints.food.toString()) { postFoodCnt = bal.uiTokenAmount.uiAmount; }
+			if (bal.mint == sageGameAcct.account.mints.ammo.toString()) { postAmmoCnt = bal.uiTokenAmount.uiAmount; }
+		}
+		let minedAmount = postRssCnt - preRssCnt;
+		let burnedFood = preFoodCnt - postFoodCnt;
+		let burnedAmmo = preAmmoCnt - postAmmoCnt;
+
+		let minedRssName = cargoItems.find(r => r.token == resourceToken.toString())?.name;
+		let starbaseName = validTargets.find(target => (target.x + ',' + target.y) == targetX + ',' + targetY )?.name;
+		await sendToInflux(`mining,fleet=${influxEscape(fleet.label)},starbase=${influxEscape(starbaseName)},sectorX=${targetX},sectorY=${targetY},rss=${influxEscape(minedRssName)} burnedFuel=${fleet.planetExitFuelAmount},burnedFood=${burnedFood},burnedAmmo=${burnedAmmo},amount=${minedAmount}`);
+            }
+
         });
     }
 
@@ -2869,17 +3133,18 @@ async function sendAndConfirmTx(txSerialized, lastValidBlockHeight, txHash, flee
             transactions.push(tx2);
 
             //let txResult = {craftingId: formattedRandomBytes, result: await txSignAndSend(transactions, userCraft, 'START CRAFTING', Math.min(globalSettings.craftingTxMultiplier, 500) )};
-            let txResult = {craftingId: formattedRandomBytes, result: await txSliceAndSend(transactions, userCraft, 'START CRAFTING', Math.min(globalSettings.craftingTxMultiplier, 500), 6 )};
+            let txResult = {craftingId: formattedRandomBytes, feeAtlas: 0, result: await txSliceAndSend(transactions, userCraft, 'START CRAFTING', Math.min(globalSettings.craftingTxMultiplier, 500), 6 )};
 
-            // statsadd start
+            if (!userCraft.state.includes('ERROR')) {
             let postTokenBalances = txResult.result.meta.postTokenBalances;
             let feeAccount = txResult.result.transaction.message.staticAccountKeys.map((key) => key.toBase58())[3];
             for (var b in postTokenBalances) {
             	if (postTokenBalances[b].mint=='ATLASXmbPQxBUYbxPsV97usA3fPQYEqzQBUHgiFCUsXx' && postTokenBalances[b].owner==feeAccount && postTokenBalances[b].uiTokenAmount.uiAmount) {
             		await alterStats('ATLAS Fees','Crafting',postTokenBalances[b].uiTokenAmount.uiAmount,'ATLAS',4);
+				txResult.feeAtlas = postTokenBalances[b].uiTokenAmount.uiAmount;
             	}
             }
-	    // statsadd end
+	    }
 
             resolve(txResult);
         });
@@ -2890,6 +3155,10 @@ async function sendAndConfirmTx(txSerialized, lastValidBlockHeight, txHash, flee
             let transactions = [];
 
             let craftRecipe = craftRecipes.find(item => item.publicKey.toString() === craftingProcess.recipe.toString());
+
+            let influxStr = '';
+            let starbaseName = validTargets.find(target => (target.x + ',' + target.y) == (starbase.account.sector[0].toNumber() + ',' + starbase.account.sector[1].toNumber()))?.name;;
+            let outputName = cargoItems.find(r => r.token == craftRecipe.output.mint.toString())?.name;
 
             // status:
             // <2 = not ready
@@ -2922,6 +3191,9 @@ async function sendAndConfirmTx(txSerialized, lastValidBlockHeight, txHash, flee
                     const bitValue = craftingProcess.inputsChecksum[0] + craftingProcess.inputsChecksum[1] * 256;
                     const ingredientBurned = ((bitValue >> ingredient.idx) & 1) == 0;
                     if(ingredientBurned) { cLog(1,`${FleetTimeStamp(userCraft.label)} Ingredient`, ingredient.idx, `was already burned, skipping ...`); continue; }
+
+                    let inputName = cargoItems.find(r => r.token == ingredient.mint.toString())?.name;
+                    influxStr += (influxStr.length ? "\n" : "") + `crafting,starbase=${influxEscape(starbaseName)},sectorX=${starbase.account.sector[0].toNumber()},sectorY=${starbase.account.sector[1].toNumber()},input=${influxEscape(inputName)},output=${influxEscape(outputName)},craftingID=${userCraft.craftingId},type=Input fee=${userCraft.feeAtlas ? userCraft.feeAtlas : 0},amount=${craftingProcess.quantity * ingredient.amount}`;
 
                     let tx = { instruction: await sageProgram.methods.burnCraftingConsumables({
                         ingredientIndex: ingredient.idx
@@ -3003,6 +3275,8 @@ async function sendAndConfirmTx(txSerialized, lastValidBlockHeight, txHash, flee
                 //if the output checksum is 0, we haven't claimed the output yet.
                 if(!craftingProcess.outputsChecksum[0])
                 {
+                    	influxStr += (influxStr.length ? "\n" : "") + `crafting,starbase=${influxEscape(starbaseName)},sectorX=${starbase.account.sector[0].toNumber()},sectorY=${starbase.account.sector[1].toNumber()},output=${influxEscape(outputName)},craftingID=${userCraft.craftingId},type=Output fee=${userCraft.feeAtlas ? userCraft.feeAtlas : 0},amount=${craftingProcess.quantity}`;
+
 	                let tx1 = { instruction: await sageProgram.methods.claimCraftingOutputs({
 	                    ingredientIndex: craftRecipe.output.idx
 	                }).accountsStrict({
@@ -3090,6 +3364,10 @@ async function sendAndConfirmTx(txSerialized, lastValidBlockHeight, txHash, flee
             //let txResult = await txSignAndSend(tx2, userCraft, 'COMPLETING CRAFT TX2');
             //let txResult = await txSignAndSend(transactions, userCraft, 'COMPLETING CRAFT', Math.min(globalSettings.craftingTxMultiplier, 500) );
             let txResult = await txSliceAndSend(transactions, userCraft, 'COMPLETING CRAFT', Math.min(globalSettings.craftingTxMultiplier, 500), 6); 
+
+            if(!userCraft.state.includes('ERROR')) {
+		await sendToInflux(influxStr);
+            }
 
             // Allow RPC to catch up (to be sure the crew is available before starting the next job)
             await wait(4000);
@@ -3485,10 +3763,10 @@ async function sendAndConfirmTx(txSerialized, lastValidBlockHeight, txHash, flee
 			scanMinDiv.appendChild(scanMinLabel);
 			scanMinDiv.appendChild(scanMin);
 			let scanMin2Label = document.createElement('span');
-			scanMin2Label.innerHTML = 'Instant stricke out below:';
+			scanMin2Label.innerHTML = 'Instant strike out below:';
 			let scanMin2 = document.createElement('input');
 			scanMin2.setAttribute('type', 'text');
-			scanMin2.placeholder = '5';
+			scanMin2.placeholder = '0';
 			scanMin2.style.width = '30px';
 			scanMin2.style.marginRight = '10px';
 			scanMin2.value = fleetParsedData && fleetParsedData.scanMin2 ? fleetParsedData.scanMin2 : '';
@@ -3503,7 +3781,8 @@ async function sendAndConfirmTx(txSerialized, lastValidBlockHeight, txHash, flee
 			scanMoveLabel.innerHTML = 'Move While Scanning:';
 			let scanMove = document.createElement('input');
 			scanMove.setAttribute('type', 'checkbox');
-			scanMove.checked = fleetParsedData && fleetParsedData.scanMove && fleetParsedData.scanMove == 'false' || false ? false : true;
+			//scanMove.checked = fleetParsedData && fleetParsedData.scanMove && fleetParsedData.scanMove == 'false' || false ? false : true;
+			scanMove.checked = fleetParsedData && fleetParsedData.scanMove;
 			scanMove.style.marginRight = '10px';
 			let scanMoveDiv = document.createElement('div');
 			scanMoveDiv.appendChild(scanMoveLabel);
@@ -3534,10 +3813,21 @@ async function sendAndConfirmTx(txSerialized, lastValidBlockHeight, txHash, flee
 			scanRow2.classList.add('assist-scan2-row');
 			scanRow2.style.display = fleetParsedData && fleetParsedData.assignment == 'Scan' ? 'table-row' : 'none';
 
+			let scanMin3Label = document.createElement('span');
+			scanMin3Label.innerHTML = 'Instant s/o below (on success):';
+			let scanMin3 = document.createElement('input');
+			scanMin3.setAttribute('type', 'text');
+			scanMin3.placeholder = '0';
+			scanMin3.style.width = '30px';
+			scanMin3.style.marginRight = '10px';
+			scanMin3.value = fleetParsedData && fleetParsedData.scanMin3 ? fleetParsedData.scanMin3 : '';
+			scanMinDiv.appendChild(scanMin3Label);
+			scanMinDiv.appendChild(scanMin3);
+
 			let scanPadTd2 = document.createElement('td');
 			scanRow2.appendChild(scanPadTd2);
 			let scanPatternLabel = document.createElement('span');
-			scanPatternLabel.innerHTML = 'Override the global pattern:';
+			scanPatternLabel.innerHTML = 'Override pattern:';
 			let scanPattern = document.createElement('select');
 			scanPattern.style.marginRight = '10px';
 			scanPattern.innerHTML += '<option value=""></option>';
@@ -3553,14 +3843,93 @@ async function sendAndConfirmTx(txSerialized, lastValidBlockHeight, txHash, flee
 			scanPatternLength.style.width = '30px';			
 			scanPatternLength.value = fleetParsedData && fleetParsedData.scanPatternLength ? fleetParsedData.scanPatternLength : '';
 			
+			let scanSearchDistLabel = document.createElement('span');
+			scanSearchDistLabel.innerHTML = 'Search dist:';
+			let scanSearchDist = document.createElement('input');
+			scanSearchDist.setAttribute('type', 'text');
+			scanSearchDist.style.width = '25px';
+			scanSearchDist.placeholder = '15';
+			scanSearchDist.style.marginRight = '5px';
+			scanSearchDist.value = fleetParsedData && fleetParsedData.scanSearchDist ? fleetParsedData.scanSearchDist : '';
+			let scanClusterFactorLabel = document.createElement('span');
+			scanClusterFactorLabel.innerHTML = 'Cluster/dist:';
+			let scanClusterFactor = document.createElement('input');
+			scanClusterFactor.setAttribute('type', 'text');
+			scanClusterFactor.style.width = '25px';
+			scanClusterFactor.placeholder = '50';
+			scanClusterFactor.style.marginRight = '5px';
+			scanClusterFactor.value = fleetParsedData && fleetParsedData.scanClusterFactor ? fleetParsedData.scanClusterFactor : '';
+			let scanNeighborhoodMinGoodLabel = document.createElement('span');
+			scanNeighborhoodMinGoodLabel.innerHTML = 'Neighbor min good:';
+			let scanNeighborhoodMinGood = document.createElement('input');
+			scanNeighborhoodMinGood.setAttribute('type', 'text');
+			scanNeighborhoodMinGood.style.width = '25px';
+			scanNeighborhoodMinGood.placeholder = '3';
+			scanNeighborhoodMinGood.style.marginRight = '5px';
+			scanNeighborhoodMinGood.value = fleetParsedData && fleetParsedData.scanNeighborhoodMinGood ? fleetParsedData.scanNeighborhoodMinGood : '';
+			let scanCheckWhileCooldownLeftLabel = document.createElement('span');
+			scanCheckWhileCooldownLeftLabel.innerHTML = 'Check % c/d left:';
+			let scanCheckWhileCooldownLeft = document.createElement('input');
+			scanCheckWhileCooldownLeft.setAttribute('type', 'text');
+			scanCheckWhileCooldownLeft.style.width = '25px';
+			scanCheckWhileCooldownLeft.placeholder = '0';
+			scanCheckWhileCooldownLeft.value = fleetParsedData && fleetParsedData.scanCheckWhileCooldownLeft ? fleetParsedData.scanCheckWhileCooldownLeft : '';
+			/*
+			let scanCheckWhileCooldownLeftProbLabel = document.createElement('span');
+			scanCheckWhileCooldownLeftProbLabel.innerHTML = 'Prob:';
+			let scanCheckWhileCooldownLeftProb = document.createElement('input');
+			scanCheckWhileCooldownLeftProb.setAttribute('type', 'text');
+			scanCheckWhileCooldownLeftProb.style.width = '25px';
+			scanCheckWhileCooldownLeftProb.placeholder = '0';
+			scanCheckWhileCooldownLeftProb.style.marginRight = '5px';
+			scanCheckWhileCooldownLeftProb.value = fleetParsedData && fleetParsedData.scanCheckWhileCooldownLeftProb ? fleetParsedData.scanCheckWhileCooldownLeftProb : '';
+   			*/
+			let scanBypassPercentLabel = document.createElement('span');
+			scanBypassPercentLabel.innerHTML = '<br>Bypass %:';
+			let scanBypassPercent = document.createElement('input');
+			scanBypassPercent.setAttribute('type', 'text');
+			scanBypassPercent.style.width = '25px';
+			scanBypassPercent.placeholder = '4';
+			scanBypassPercent.style.marginRight = '5px';
+			scanBypassPercent.value = fleetParsedData && fleetParsedData.scanBypassPercent ? fleetParsedData.scanBypassPercent : '';
+			let scanHomeAtPercentLabel = document.createElement('span');
+			scanHomeAtPercentLabel.innerHTML = 'Home at fuel/dist %:';
+			let scanHomeAtPercent = document.createElement('input');
+			scanHomeAtPercent.setAttribute('type', 'text');
+			scanHomeAtPercent.style.width = '30px';
+			scanHomeAtPercent.placeholder = '0';
+			scanHomeAtPercent.value = fleetParsedData && fleetParsedData.scanHomeAtPercent ? fleetParsedData.scanHomeAtPercent : '';
+
 			let scanPatternDiv = document.createElement('div');
+			scanPatternDiv.appendChild(scanMin3Label);
+			scanPatternDiv.appendChild(scanMin3);
 			scanPatternDiv.appendChild(scanPatternLabel);
 			scanPatternDiv.appendChild(scanPattern);
 			scanPatternDiv.appendChild(scanPatternLengthLabel);
 			scanPatternDiv.appendChild(scanPatternLength);
+
+			let scanAutoDiv = document.createElement('div');
+			scanAutoDiv.style.display = (fleetParsedData && fleetParsedData.scanPattern && fleetParsedData.scanPattern.includes('auto')) ? 'block' : 'none';
+			scanAutoDiv.appendChild(scanSearchDistLabel);
+			scanAutoDiv.appendChild(scanSearchDist);
+			scanAutoDiv.appendChild(scanClusterFactorLabel);
+			scanAutoDiv.appendChild(scanClusterFactor);
+			scanAutoDiv.appendChild(scanNeighborhoodMinGoodLabel);
+			scanAutoDiv.appendChild(scanNeighborhoodMinGood);
+			scanAutoDiv.appendChild(scanCheckWhileCooldownLeftLabel);
+			scanAutoDiv.appendChild(scanCheckWhileCooldownLeft);
+			/*
+			scanAutoDiv.appendChild(scanCheckWhileCooldownLeftProbLabel);
+			scanAutoDiv.appendChild(scanCheckWhileCooldownLeftProb);
+   			*/
+			scanAutoDiv.appendChild(scanBypassPercentLabel);
+			scanAutoDiv.appendChild(scanBypassPercent);
+			scanAutoDiv.appendChild(scanHomeAtPercentLabel);
+			scanAutoDiv.appendChild(scanHomeAtPercent);
 			let scanPatternTd = document.createElement('td');
 			scanPatternTd.setAttribute('colspan', '7');
 			scanPatternTd.appendChild(scanPatternDiv);
+			scanPatternTd.appendChild(scanAutoDiv);
 			scanRow2.appendChild(scanPatternTd);
 			
 			targetElem.appendChild(scanRow2);
@@ -3836,6 +4205,15 @@ async function sendAndConfirmTx(txSerialized, lastValidBlockHeight, txHash, flee
 							fleetDestCoordSelect.style.display = 'inline-block';
 					}
 			};
+
+			scanPattern.onchange = function() {
+					if (scanPattern.value.includes('auto')) {
+							scanAutoDiv.style.display = 'block';
+					} else {
+							scanAutoDiv.style.display = 'none';
+					}
+			};
+
 	}
 
     async function addCraftingInput(craftIndex) {
@@ -3952,6 +4330,11 @@ async function sendAndConfirmTx(txSerialized, lastValidBlockHeight, txHash, flee
 			fleet.justResupplied=false;
 			fleet.moveTarget = '';
 			fleet.stopping = false;
+			fleet.scanAutoMoveTo = null;
+			fleet.scanForceResupply = false;
+			fleet.scanStartForcedResupply = false;
+			fleet.scanLastFuelAmount = undefined;
+
 			//updateFleetState(fleet, fleetState, true);
 			updateFleetState(fleet, 'Starting', true);
 			fleet.state = fleetState; // overwrite "starting" with the real state but don't display it - just like in toggleAssistant
@@ -4230,8 +4613,17 @@ async function sendAndConfirmTx(txSerialized, lastValidBlockHeight, txHash, flee
 			let scanMin2 = parseInt(scanRows[i].children[1].children[0].children[3].value) || 0;
 			let scanMove = scanRows[i].children[2].children[0].children[1].checked;
 
-			let scanPattern = scanRows2[i].children[1].children[0].children[1].value;
-			let scanPatternLength = parseInt(scanRows2[i].children[1].children[0].children[3].value) || 0;
+			let scanMin3 = parseInt(scanRows2[i].children[1].children[0].children[1].value) || 0;
+			let scanPattern = scanRows2[i].children[1].children[0].children[3].value;
+			let scanPatternLength = parseInt(scanRows2[i].children[1].children[0].children[5].value) || 0;
+
+			let scanSearchDist = parseInt(scanRows2[i].children[1].children[1].children[1].value) || 15;
+			let scanClusterFactor = parseInt(scanRows2[i].children[1].children[1].children[3].value) || 50;
+			let scanNeighborhoodMinGood = parseInt(scanRows2[i].children[1].children[1].children[5].value) || 3;
+			let scanCheckWhileCooldownLeft = parseInt(scanRows2[i].children[1].children[1].children[7].value) || 0;
+			//let scanCheckWhileCooldownLeftProb = parseInt(scanRows2[i].children[1].children[0].children[15].value) || 0;
+			let scanBypassPercent = parseInt(scanRows2[i].children[1].children[1].children[9].value) || 4;
+			let scanHomeAtPercent = parseInt(scanRows2[i].children[1].children[1].children[11].value) || 0;
 
 			let fleetMineResource = mineRows[i].children[1].children[1].value;
 			fleetMineResource = fleetMineResource !== '' ? cargoItems.find(r => r.name == fleetMineResource).token : '';
@@ -4274,7 +4666,51 @@ async function sendAndConfirmTx(txSerialized, lastValidBlockHeight, txHash, flee
 
 				let fleetScanEnd = fleetParsedData && fleetParsedData.scanEnd ? fleetParsedData.scanEnd : 0;
 
-				await GM.setValue(fleetPK, `{\"name\": \"${fleetName}\", \"assignment\": \"${fleetAssignment}\", \"mineResource\": \"${fleetMineResource}\", \"dest\": \"${fleetDestCoord}\", \"starbase\": \"${fleetStarbaseCoord}\", \"moveType\": \"${moveType}\", \"subwarpPref\": \"${subwarpPref}\", \"moveTarget\": \"${fleetMoveTarget}\", \"transportResource1\": \"${transportResource1}\", \"transportResource1Perc\": ${transportResource1Perc}, \"transportResource1Crew\": ${transportResource1Crew}, \"transportResource2\": \"${transportResource2}\", \"transportResource2Perc\": ${transportResource2Perc}, \"transportResource3\": \"${transportResource3}\", \"transportResource3Perc\": ${transportResource3Perc}, \"transportResource4\": \"${transportResource4}\", \"transportResource4Perc\": ${transportResource4Perc}, \"transportSBResource1\": \"${transportSBResource1}\", \"transportSBResource1Perc\": ${transportSBResource1Perc}, \"transportSBResource1Crew\": ${transportSBResource1Crew}, \"transportSBResource2\": \"${transportSBResource2}\", \"transportSBResource2Perc\": ${transportSBResource2Perc}, \"transportSBResource3\": \"${transportSBResource3}\", \"transportSBResource3Perc\": ${transportSBResource3Perc}, \"transportSBResource4\": \"${transportSBResource4}\", \"transportSBResource4Perc\": ${transportSBResource4Perc}, \"scanBlock\": ${JSON.stringify(scanBlock)}, \"scanMin\": ${scanMin}, \"scanMin2\": ${scanMin2}, \"scanPattern\": \"${scanPattern}\", \"scanPatternLength\": ${scanPatternLength}, \"scanMove\": \"${scanMove}\", \"scanEnd\": ${fleetScanEnd} }`);
+				//await GM.setValue(fleetPK, `{\"name\": \"${fleetName}\", \"assignment\": \"${fleetAssignment}\", \"mineResource\": \"${fleetMineResource}\", \"dest\": \"${fleetDestCoord}\", \"starbase\": \"${fleetStarbaseCoord}\", \"moveType\": \"${moveType}\", \"subwarpPref\": \"${subwarpPref}\", \"moveTarget\": \"${fleetMoveTarget}\", \"transportResource1\": \"${transportResource1}\", \"transportResource1Perc\": ${transportResource1Perc}, \"transportResource1Crew\": ${transportResource1Crew}, \"transportResource2\": \"${transportResource2}\", \"transportResource2Perc\": ${transportResource2Perc}, \"transportResource3\": \"${transportResource3}\", \"transportResource3Perc\": ${transportResource3Perc}, \"transportResource4\": \"${transportResource4}\", \"transportResource4Perc\": ${transportResource4Perc}, \"transportSBResource1\": \"${transportSBResource1}\", \"transportSBResource1Perc\": ${transportSBResource1Perc}, \"transportSBResource1Crew\": ${transportSBResource1Crew}, \"transportSBResource2\": \"${transportSBResource2}\", \"transportSBResource2Perc\": ${transportSBResource2Perc}, \"transportSBResource3\": \"${transportSBResource3}\", \"transportSBResource3Perc\": ${transportSBResource3Perc}, \"transportSBResource4\": \"${transportSBResource4}\", \"transportSBResource4Perc\": ${transportSBResource4Perc}, \"scanBlock\": ${JSON.stringify(scanBlock)}, \"scanMin\": ${scanMin}, \"scanMin2\": ${scanMin2}, \"scanMin3\": ${scanMin3}, \"scanSearchDist\": ${scanSearchDist}, \"scanClusterFactor\": ${scanClusterFactor}, \"scanNeighborhoodMinGood\": ${scanNeighborhoodMinGood}, \"scanCheckWhileCooldownLeft\": ${scanCheckWhileCooldownLeft}, \"scanBypassPercent\": ${scanBypassPercent}, \"scanHomeAtPercent\": ${scanHomeAtPercent}, \"scanPattern\": \"${scanPattern}\", \"scanPatternLength\": ${scanPatternLength}, \"scanMove\": \"${scanMove}\", \"scanEnd\": ${fleetScanEnd} }`);
+				let fleet = {
+					name: fleetName,
+					assignment: fleetAssignment,
+					mineResource: fleetMineResource,
+					dest: fleetDestCoord,
+					starbase: fleetStarbaseCoord,
+					moveType: moveType,
+					subwarpPref: subwarpPref,
+					moveTarget: fleetMoveTarget,
+					transportResource1: transportResource1,
+					transportResource1Perc: transportResource1Perc,
+					transportResource1Crew: transportResource1Crew,
+					transportResource2: transportResource2,
+					transportResource2Perc: transportResource2Perc,
+					transportResource3: transportResource3,
+					transportResource3Perc: transportResource3Perc,
+					transportResource4: transportResource4,
+					transportResource4Perc: transportResource4Perc,
+					transportSBResource1: transportSBResource1,
+					transportSBResource1Perc: transportSBResource1Perc,
+					transportSBResource1Crew: transportSBResource1Crew,
+					transportSBResource2: transportSBResource2,
+					transportSBResource2Perc: transportSBResource2Perc,
+					transportSBResource3: transportSBResource3,
+					transportSBResource3Perc: transportSBResource3Perc,
+					transportSBResource4: transportSBResource4,
+					transportSBResource4Perc: transportSBResource4Perc,
+					scanBlock: scanBlock,
+					scanMin: scanMin,
+					scanMin2: scanMin2,
+					scanMin3: scanMin3,
+					scanSearchDist: scanSearchDist,
+					scanClusterFactor: scanClusterFactor,
+					scanNeighborhoodMinGood: scanNeighborhoodMinGood,
+					scanCheckWhileCooldownLeft: scanCheckWhileCooldownLeft,
+					scanBypassPercent: scanBypassPercent,
+					scanHomeAtPercent: scanHomeAtPercent,
+					scanPattern: scanPattern,
+					scanPatternLength: scanPatternLength,
+					scanMove: scanMove,
+					scanEnd: fleetScanEnd
+				};
+				await GM.setValue(fleetPK, JSON.stringify(fleet));
+
 				userFleets[userFleetIndex].mineResource = fleetMineResource;
 				userFleets[userFleetIndex].destCoord = fleetDestCoord;
 				userFleets[userFleetIndex].starbaseCoord = fleetStarbaseCoord;
@@ -4282,6 +4718,14 @@ async function sendAndConfirmTx(txSerialized, lastValidBlockHeight, txHash, flee
 				userFleets[userFleetIndex].scanBlock = scanBlock;
 				userFleets[userFleetIndex].scanMin = scanMin;
 				userFleets[userFleetIndex].scanMin2 = scanMin2;
+				userFleets[userFleetIndex].scanMin3 = scanMin3;
+				userFleets[userFleetIndex].scanSearchDist = scanSearchDist;
+				userFleets[userFleetIndex].scanClusterFactor = scanClusterFactor;
+				userFleets[userFleetIndex].scanNeighborhoodMinGood = scanNeighborhoodMinGood;
+				userFleets[userFleetIndex].scanCheckWhileCooldownLeft = scanCheckWhileCooldownLeft;
+				//userFleets[userFleetIndex].scanCheckWhileCooldownLeftProb = scanCheckWhileCooldownLeftProb;
+				userFleets[userFleetIndex].scanBypassPercent = scanBypassPercent;
+				userFleets[userFleetIndex].scanHomeAtPercent = scanHomeAtPercent;
 				userFleets[userFleetIndex].scanPattern = scanPattern;
 				userFleets[userFleetIndex].scanPatternLength = scanPatternLength;
 				userFleets[userFleetIndex].scanMove = scanMove;
@@ -4307,6 +4751,7 @@ async function sendAndConfirmTx(txSerialized, lastValidBlockHeight, txHash, flee
             let craftState = craftParsedData && craftParsedData.state || 'Idle';
             let craftingId = craftParsedData && craftParsedData.craftingId || 0;
             let craftingCoords = craftParsedData && craftParsedData.craftingCoords || '';
+            let craftFeeAtlas = craftParsedData && craftParsedData.feeAtlas || 0;
             let craftBelowAmount = parseIntKMG(row.children[4].firstChild.value) || '';
             let craftSpecial = row.children[5].firstChild.value;
 
@@ -4318,6 +4763,7 @@ async function sendAndConfirmTx(txSerialized, lastValidBlockHeight, txHash, flee
                 amount: craftAmount,
                 belowAmount: craftBelowAmount,
 		special: craftSpecial,
+		feeAtlas: craftFeeAtlas,
                 state: craftState,
                 craftingCoords: craftingCoords,
                 craftingId: craftingId
@@ -4466,6 +4912,11 @@ async function sendAndConfirmTx(txSerialized, lastValidBlockHeight, txHash, flee
 
 			emailInterface: parseStringDefault(document.querySelector('#emailInterface').value,''),
 
+			influxURL: parseStringDefault(document.querySelector('#influxURL').value,''),
+			influxAuth: parseStringDefault(document.querySelector('#influxAuth').value,''),
+
+			scanMapURL: parseStringDefaultForced(document.querySelector('#scanMapURL').value,'https://slya.de/sdu.json'),
+
 			emailFleetIxErrors: document.querySelector('#emailFleetIxErrors').checked,
 			emailCraftIxErrors: document.querySelector('#emailCraftIxErrors').checked,
 			emailNoCargoLoaded: document.querySelector('#emailNoCargoLoaded').checked,
@@ -4536,6 +4987,11 @@ async function sendAndConfirmTx(txSerialized, lastValidBlockHeight, txHash, flee
 		document.querySelector('#queueExitWarpSubwarp').checked = globalSettings.queueExitWarpSubwarp;
 
 		document.querySelector('#emailInterface').value = globalSettings.emailInterface;
+
+		document.querySelector('#influxURL').value = globalSettings.influxURL;
+		document.querySelector('#influxAuth').value = globalSettings.influxAuth;
+
+		document.querySelector('#scanMapURL').value = globalSettings.scanMapURL;
 
 		document.querySelector('#emailFleetIxErrors').checked = globalSettings.emailFleetIxErrors;
 		document.querySelector('#emailCraftIxErrors').checked = globalSettings.emailCraftIxErrors;
@@ -4912,14 +5368,19 @@ async function sendAndConfirmTx(txSerialized, lastValidBlockHeight, txHash, flee
 					}
 					await wait(2000); //Extra wait to ensure accuracy
 
+					const fleetPK = userFleets[i].publicKey.toString();
+					const fleetSavedData = await GM.getValue(fleetPK, '{}');
+					const fleetParsedData = JSON.parse(fleetSavedData);
+					const assignment = fleetParsedData.assignment;
+
 					//Calculate next warp point if more than 1 is needed to arrive at final destination
 					if (moveDist > userFleets[i].maxWarpDistance / 100) {
 						[moveX, moveY] = calcNextWarpPoint(userFleets[i].maxWarpDistance, extra, [moveX, moveY]);
 
 						//Saves temporary waypoints for transports in case the page is refreshed mid-journey while using warp
-						const fleetPK = userFleets[i].publicKey.toString();
-						const fleetSavedData = await GM.getValue(fleetPK, '{}');
-						const fleetParsedData = JSON.parse(fleetSavedData);
+						//const fleetPK = userFleets[i].publicKey.toString();
+						//const fleetSavedData = await GM.getValue(fleetPK, '{}');
+						//const fleetParsedData = JSON.parse(fleetSavedData);
 						//cLog(3, `${FleetTimeStamp(userFleets[i].label)} moveTargets`, fleetParsedData.moveTarget, userFleets[i].moveTarget);
 						fleetParsedData.moveTarget = userFleets[i].moveTarget;
 						await GM.setValue(fleetPK, JSON.stringify(fleetParsedData));
@@ -4930,10 +5391,18 @@ async function sendAndConfirmTx(txSerialized, lastValidBlockHeight, txHash, flee
 
 					moveTime = calculateWarpTime(userFleets[i], moveDist);
 					const warpResult = await execWarp(userFleets[i], moveX, moveY, moveTime);
+					await sendToInflux(`movement,fleet=${influxEscape(userFleets[i].label)},fromX=${extra[0]},fromY=${extra[1]},toX=${moveX},toY=${moveY},assignment=${assignment} type="warp",burnedFuel=${moveDist*(userFleets[i].warpFuelConsumptionRate/100)},moveTime=${moveTime},moveDist=${moveDist}`);
+					if(userFleets[i].scanLastFuelAmount) userFleets[i].scanLastFuelAmount -= moveDist*(userFleets[i].warpFuelConsumptionRate/100);
 					warpCooldownFinished = warpResult.warpCooldownFinished;
 				} else if (currentFuelCnt + currentCargoFuelCnt >= subwarpCost) {
 					moveTime = calculateSubwarpTime(userFleets[i], moveDist);
 					await execSubwarp(userFleets[i], moveX, moveY, moveTime);
+					const fleetPK = userFleets[i].publicKey.toString();
+					const fleetSavedData = await GM.getValue(fleetPK, '{}');
+					const fleetParsedData = JSON.parse(fleetSavedData);
+					const assignment = fleetParsedData.assignment;
+					await sendToInflux(`movement,fleet=${influxEscape(userFleets[i].label)},fromX=${extra[0]},fromY=${extra[1]},toX=${moveX},toY=${moveY},assignment=${assignment} type="subwarp",burnedFuel=${moveDist*(userFleets[i].subwarpFuelConsumptionRate/100)},moveTime=${moveTime},moveDist=${moveDist}`);
+					if(userFleets[i].scanLastFuelAmount) userFleets[i].scanLastFuelAmount -= moveDist*(userFleets[i].subwarpFuelConsumptionRate/100);
 				} else {
 					cLog(1,`${FleetTimeStamp(userFleets[i].label)} Unable to move, lack of fuel`);
 					updateFleetState(userFleets[i], 'ERROR: Not enough fuel');
@@ -5029,6 +5498,7 @@ async function sendAndConfirmTx(txSerialized, lastValidBlockHeight, txHash, flee
 			((userFleets[i].scanCost == 0) && (userFleets[i].cargoCapacity - cargoCnt < userFleets[i].sduPerScan)) ||
 			//Food count check for regular scanning fleets
 			(currentFoodCnt < userFleets[i].scanCost)
+			|| (userFleets[i].scanForceResupply)
 		) {
 			await handleResupply(i, fleetCoords);
 			return;
@@ -5062,6 +5532,7 @@ async function sendAndConfirmTx(txSerialized, lastValidBlockHeight, txHash, flee
 				const currentFuel = fleetCurrentFuelTank.value.find(item => item.account.data.parsed.info.mint === sageGameAcct.account.mints.fuel.toString());
 				const currentFuelCnt = currentFuel ? currentFuel.account.data.parsed.info.tokenAmount.uiAmount : 0;
 				const fuelReadout = `Fuel: need ${Math.round(fuelNeeded)} / have ${Math.round(currentFuelCnt)}`;
+				userFleets[i].scanLastFuelAmount = currentFuelCnt;
 				if (currentFuelCnt > fuelNeeded) {
 						cLog(1, `${FleetTimeStamp(userFleets[i].label)}`, fuelReadout);
 						let moveDist = calculateMovementDistance(fleetCoords, destCoords);
@@ -5113,6 +5584,9 @@ async function sendAndConfirmTx(txSerialized, lastValidBlockHeight, txHash, flee
 			if(scanCondition < userFleets[i].scanMin2) {
 				userFleets[i].scanStrikes = globalSettings.scanStrikeCount;
 				cLog(3,`${FleetTimeStamp(userFleets[i].label)} ⚡⚡️ Instant strike out`);
+			} else if(scanCondition < userFleets[i].scanMin3 && sduFound > 0) {
+				userFleets[i].scanStrikes = globalSettings.scanStrikeCount;
+				cLog(3,`${FleetTimeStamp(userFleets[i].label)} ⚡⚡️ Instant strike out`);
 			} else if(scanCondition < userFleets[i].scanMin) {
 				userFleets[i].scanStrikes++;
 				cLog(3,`${FleetTimeStamp(userFleets[i].label)} ⚡️ Strike ${userFleets[i].scanStrikes} / ${globalSettings.scanStrikeCount}`);
@@ -5127,13 +5601,20 @@ async function sendAndConfirmTx(txSerialized, lastValidBlockHeight, txHash, flee
 				userFleets[i].scanSkipCnt++;
 			}
 
+			let scanBlockPattern = globalSettings.scanBlockPattern;
+			if(userFleets[i].scanPattern) scanBlockPattern=userFleets[i].scanPattern;
+
 			//Iterate pattern positioning id (or reset to 0 if reached end)
 			if(userFleets[i].scanMove && struckOut)
+				if(!scanBlockPattern.includes('auto')) {
 				userFleets[i].scanBlockIdx = userFleets[i].scanBlockIdx > userFleets[i].scanBlock.length - 2 ? 0 : userFleets[i].scanBlockIdx+1;
+				} else {
+					await handleScanAutoMovement(i, fleetCoords);
+				}
 
 			const needPause =
 				(struckOut && !userFleets[i].scanMove) ||
-				(userFleets[i].scanMove && userFleets[i].scanSkipCnt >= userFleets[i].scanBlock.length - 1)
+				(userFleets[i].scanMove && userFleets[i].scanSkipCnt >= userFleets[i].scanBlock.length - 1 && !scanBlockPattern.includes('auto'))
 
             let newState;
 			if (needPause) {
@@ -5162,6 +5643,9 @@ async function sendAndConfirmTx(txSerialized, lastValidBlockHeight, txHash, flee
 			//save the scan end time, so after a reload the fleet waits accordingly
 			await saveScanEnd(i);
 
+			let burnedFood = changesFood.preBalance - changesFood.postBalance;
+			await sendToInflux(`sdu,fleet=${influxEscape(userFleets[i].label)},sectorX=${fleetCoords[0]},sectorY=${fleetCoords[1]} amount=${sduFound},burnedFood=${burnedFood},chance=${scanCondition},cargoRoomLeft=${userFleets[i].cargoCapacity - cargoCnt - sduFound}`);
+
 		}
 		else if (!moved && Date.now() < userFleets[i].scanEnd && userFleets[i].state == 'Idle') {
 			userFleets[i].lastScanCoord = userFleets[i].destCoord;
@@ -5169,6 +5653,33 @@ async function sendAndConfirmTx(txSerialized, lastValidBlockHeight, txHash, flee
 			updateFleetState(userFleets[i], 'Waiting for scan cooldown ' + scanCDExpireTimeStr);
 			//await wait(userFleets[i].scanEnd - Date.now());
 		}
+	}
+
+	function influxEscape(val) {
+		return val.replaceAll("\\","\\\\").replaceAll(" ","\\ ").replaceAll(",","\\,").replaceAll("=","\\=");
+	}
+
+	async function sendToInflux(msg) {
+		if(!globalSettings.influxURL.length) return;
+		let message = '';
+		try {
+			cLog(2, 'Sending message to influx:', msg);
+			const response = await fetch(globalSettings.influxURL, {
+				method: "POST",
+				body: msg,
+				headers: {
+					"Authorization": (globalSettings.influxURL.includes('/v2/') ? "Token " : "Bearer ") + globalSettings.influxAuth
+				}
+			});
+			if (!response.ok) {
+				message = 'Error while sending a request to influx: ' + response.status + ' ' + response.statusText;
+			} else {
+				message = 'Influx: Request was successful.';
+			}
+		} catch(error) {
+			message = 'Error while sending a request to influx: ' + error.message;
+		}
+		cLog(2, message);
 	}
 
 	async function handleResupply(i, fleetCoords) {
@@ -5294,6 +5805,11 @@ async function sendAndConfirmTx(txSerialized, lastValidBlockHeight, txHash, flee
 
 			//Update last op to prevent fleet stall flagging
 			userFleets[i].lastOp = Date.now();
+
+			userFleets[i].scanAutoMoveTo = null;
+			userFleets[i].scanStartForcedResupply = false;
+			userFleets[i].scanForceResupply = false;
+			userFleets[i].scanLastFuelAmount = undefined;
 
 			//Undock
 			await execUndock(userFleets[i], userFleets[i].starbaseCoord);
@@ -5469,7 +5985,7 @@ async function sendAndConfirmTx(txSerialized, lastValidBlockHeight, txHash, flee
 			let needSupplies = false;
 
 			//Hard-coded 60 second duration check: no point resuming mining if it'll take less than 1 minute to finish
-			if (miningDuration < 60) {
+			if (miningDuration < 20) {
 				cLog(1,`${FleetTimeStamp(userFleets[i].label)} Supplies low, only ${miningDuration} seconds left`);
 				needSupplies = true;
 			}
@@ -6380,6 +6896,7 @@ async function sendAndConfirmTx(txSerialized, lastValidBlockHeight, txHash, flee
 			let currentAmmo = fleetCurrentAmmoBank.value.find(item => item.account.data.parsed.info.mint === ammoMint);
 			let currentAmmoCnt = currentAmmo ? currentAmmo.account.data.parsed.info.tokenAmount.uiAmount : 0;
 			let ammoToUnload = Math.min(currentAmmoCnt, ammoUnloadDeficit);
+			if(globalSettings.transportKeep1 && ammoToUnload > 0) { ammoToUnload -= 1; }
 			if (ammoToUnload > 0) {
 				cLog(1,`${FleetTimeStamp(fleet.label)} Unloading Ammobanks: ${ammoToUnload}`);
 				let resp = await execCargoFromFleetToStarbase(fleet, fleet.ammoBank, ammoMint, starbaseCoord, ammoToUnload, returnTx);
@@ -6515,6 +7032,96 @@ async function sendAndConfirmTx(txSerialized, lastValidBlockHeight, txHash, flee
 		fleet.crewCount = fleetAcctData.stats.miscStats.crewCount;
 	}
 
+	let lastScanMapRead = 0;
+	let lastScanMapCache=null;
+	let lastScanMapIsUpdating = false;
+	async function readScanMap() {
+
+		//if a concurrent call is reading the map, we wait until the read is done (up to 10 seconds)
+		let loopCounter = 0;
+        	while (lastScanMapIsUpdating && loopCounter < 50) {
+			await wait(200);
+			loopCounter++;
+		}
+		if(lastScanMapRead <= Date.now()-30*1000) {
+
+			lastScanMapIsUpdating = true;
+			lastScanMapCache = null;
+			lastScanMapRead = Date.now();
+			let message = '';
+			try {
+				cLog(1, 'Requesting the SDU file');
+				const response = await fetch(globalSettings.scanMapURL);
+				if (!response.ok) {
+					message = 'Error while reading the SDU file: ' + response.status + ' ' + response.statusText;
+				} else {
+					const result = await response.json();
+					if(result.timestamp < Date.now() - 60*10*1000) {
+						cLog(1, 'Error: SDU file too old');
+					} else {
+						lastScanMapCache = result.scans;
+					}
+				}
+			} catch(error) {
+				message = 'Error while requesting the SDU file: ' + error.message;
+			}
+			lastScanMapIsUpdating = false;
+			if(message) cLog(1, message);
+		} else {
+			//console.log('Reading cached scan map');
+		}
+
+		return lastScanMapCache;
+	}
+
+	async function scanTargetStillValid(i,fleetCoords) {
+		let scanData = await readScanMap();
+		if(!scanData) {
+			userFleets[i].fontColor = 'yellow';
+			updateAssistStatus(userFleets[i]);
+			return true;
+		}
+		let scanX = fleetCoords[0];
+		let scanY = fleetCoords[1];
+		let scan = scanData.find(item => item.x == scanX && item.y == scanY);
+		let cooldownLeft = (userFleets[i].scanEnd - Date.now())/1000;
+		let lowerThreshold = userFleets[i].scanCooldown * (userFleets[i].scanCheckWhileCooldownLeft/100);
+		if(userFleets[i].scanCooldown - lowerThreshold <= 0) return true; //prevent division by zero
+
+		if(cooldownLeft < lowerThreshold) {
+			cLog(3,`${FleetTimeStamp(userFleets[i].label)} SAM scan coord`,scanX,`/`,scanY,` lower cooldown threshold reached, fleet stays here until scan.`);
+			return true;
+		}
+
+		let currentThreshold = (cooldownLeft - lowerThreshold) / (userFleets[i].scanCooldown - lowerThreshold) * userFleets[i].scanMin2;
+
+		if(scan && scan.c * 100 < currentThreshold) {
+			cLog(3,`${FleetTimeStamp(userFleets[i].label)} SAM scan coord`,scanX,`/`,scanY,`turned bad while waiting for the cooldown.`);
+			return false;
+		}
+		cLog(3,`${FleetTimeStamp(userFleets[i].label)} SAM scan coord`,scanX,`/`,scanY,`still valid.`);
+		return true;
+	}
+
+	async function scanAutoHasEnoughFuel(i, fleetCoords) {
+		if(!userFleets[i].scanHomeAtPercent || userFleets[i].scanHomeAtPercent <= 100) return true;
+		const starbaseCoords = ConvertCoords(userFleets[i].starbaseCoord);
+		if(userFleets[i].scanStartForcedResupply) return false;
+		let fuelNeeded = 0;
+		if (userFleets[i].moveType == 'warp' || userFleets[i].moveType == 'warp-subwarp-warp') {
+			fuelNeeded = calcWarpFuelReq(userFleets[i], fleetCoords, starbaseCoords);
+		} else {
+			const distFromTargetToStarbase = calculateMovementDistance(fleetCoords, starbaseCoords);
+			fuelNeeded = calculateSubwarpFuelBurn(userFleets[i], distFromTargetToStarbase);
+		}
+		cLog(3,`${FleetTimeStamp(userFleets[i].label)} SAM last fuel amount`,userFleets[i].scanLastFuelAmount,'fuelNeeded',fuelNeeded,'fuelNeededAlt',(fuelNeeded*(userFleets[i].scanHomeAtPercent/100)));
+		const hasEnoughFuel = (typeof userFleets[i].scanLastFuelAmount == 'undefined' || userFleets[i].scanLastFuelAmount > fuelNeeded * (userFleets[i].scanHomeAtPercent/100));
+		if(!hasEnoughFuel) userFleets[i].scanStartForcedResupply = true;
+		return hasEnoughFuel;
+	}
+
+	async function handleScanAutoMovement($,o){let _=!1,t=parseInt(userFleets[$].destCoord.split(",")[0].trim()),n=parseInt(userFleets[$].destCoord.split(",")[1].trim());if(!userFleets[$].scanAutoMoveTo){let e=ConvertCoords(userFleets[$].starbaseCoord);CoordsEqual(o,e)?userFleets[$].scanAutoMoveTo=[t,n]:userFleets[$].scanAutoMoveTo=[o[0],o[1]];return}userFleets[$].scanAutoMoveTo=null,_=await readScanMap();let s=globalSettings.scanBlockLength;userFleets[$].scanPatternLength&&(s=userFleets[$].scanPatternLength);let a=globalSettings.scanBlockPattern;userFleets[$].scanPattern&&(a=userFleets[$].scanPattern),s<5&&(s=5);let l=t-s,u=t+s,r=n-s,i=n+s,c=userFleets[$].scanNeighborhoodMinGood,f=parseInt(userFleets[$].scanClusterFactor),h=parseInt(userFleets[$].scanSearchDist);if(_){let d=0,p=[0,0],b=await scanAutoHasEnoughFuel($,o),v=1,g=1;a.includes("2hv")&&(v=2,g=2);let M=0,m=[];if(b){for(let A=o[0]-2;A<=o[0]+2;A++)for(let y=o[1]-2;y<=o[1]+2;y++){if(A==o[0]&&y==o[1]||A<l||A>u||y<r||y>i)continue;let T=_.find($=>$.x==A&&$.y==y);T&&100*T.c>=userFleets[$].scanMin&&M++}if(M>=c){let x=[];for(let S=0-v;S<=0+v;S++)for(let P=0-g;P<=0+g;P++){let B=[o[0]+S,o[1]+P];if(!(a.includes("2hv")&&(Math.abs(S)>=2&&0!=P||Math.abs(P)>=2&&0!=S))&&!(B[0]<l)&&!(B[0]>u)&&!(B[1]<r)&&!(B[1]>i)){if(0!=S||0!=P){let C=_.find($=>$.x==B[0]&&$.y==B[1]);C&&100*C.c>=userFleets[$].scanMin&&m.push([S,P]),C&&C.c>d&&(d=C.c,p=[S,P])}x.push([S,P])}}if(m.length){.5>Math.random()&&(p=m[Math.floor(Math.random()*m.length)]),m=[];let k=[];if(Math.abs(p[0])>=1&&Math.abs(p[1])>=1)k.push([o[0]+p[0],o[1]+p[1]]),k.push([o[0]+p[0],o[1]]),k.push([o[0]+p[0],o[1]+-1*p[1]]),k.push([o[0],o[1]+p[1]]),k.push([o[0]+-1*p[0],o[1]+p[1]]),a.includes("2hv")&&(k.push([o[0],o[1]+2*p[1]]),k.push([o[0]+2*p[0],o[1]]));else for(let w of x)(0!=w[0]||0!=w[1])&&(Math.abs(p[0])>=1&&(0==w[0]||Math.sign(w[0])==Math.sign(p[0]))||Math.abs(p[1])>=1&&(0==w[1]||Math.sign(w[1])==Math.sign(p[1])))&&k.push([o[0]+w[0],o[1]+w[1]]);for(let L of k){if(L[0]<l||L[0]>u||L[1]<r||L[1]>i)continue;let q=_.find($=>$.x==L[0]&&$.y==L[1]);(!q||100*q.c>=userFleets[$].scanMin)&&m.push([L[0],L[1]])}}}}if(M>=c&&m.length>0){let F=m[Math.floor(Math.random()*m.length)];userFleets[$].scanAutoMoveTo=F}else{let D=0,G=0,N=[0,0],R=0;if(b){let j=2.85,z=3;for(;z<2*s-2&&z<=h;){for(let E=-1;E<=1;E+=.2)for(let H=-1;H<=1;H+=.2){if(10!=Math.round(10*Math.abs(E))&&10!=Math.round(10*Math.abs(H)))continue;let I=E,J=H,K=[o[0]+Math.round(I*z),o[1]+Math.round(J*z)];if(K[0]<l||K[0]>u||K[1]<r||K[1]>i)continue;let O=Math.round(j),Q=0,U=0,V=0,W=j*j;for(let X=Math.floor(0-j);X<=Math.ceil(j);X++)for(let Y=Math.floor(0-j);Y<=Math.ceil(j);Y++)if(X*X+Y*Y<=W){if(K[0]+X<l||K[0]+X>u||K[1]+Y<r||K[1]+Y>i)continue;let Z=_.find($=>$.x==K[0]+X&&$.y==K[1]+Y);Z&&100*Z.c>userFleets[$].scanMin&&(Q++,U+=Z.c),V++}Q>=2&&U/Math.pow(Q,f/100)/Math.sqrt(V)>G&&(D=Q,G=U/Math.pow(Q,f/100)/Math.sqrt(V),N=[Math.round(I),Math.round(J)],R=V)}j+=.4,z+=1}}else{let $$=ConvertCoords(userFleets[$].starbaseCoord),$o=[$$[0]-o[0],$$[1]-o[1]];if(0!=$o[0]||0!=$o[1]){if(2>=Math.abs($o[0])&&2>=Math.abs($o[1])){userFleets[$].scanAutoMoveTo=$$,userFleets[$].scanForceResupply=!0,cLog(3,`${FleetTimeStamp(userFleets[$].label)} SAM heading back and near the SB, moving to SB`);return}let $_=[$o[0],$o[1]].map($=>$/Math.max(Math.abs($o[0]),Math.abs($o[1])));N=[Math.round($_[0]),Math.round($_[1])],D=1,a="auto(1,2hv++)",cLog(3,`${FleetTimeStamp(userFleets[$].label)} SAM heading back, direction`,N[0],"/",N[1])}}if(D>0){let $t=N[0],$n=N[1];("auto(1,2hv++)"==a||("auto(1,2hv)"==a||"auto(1,2hv+)"==a)&&(0==N[0]||0==N[1]))&&($t=2*N[0],$n=2*N[1]),p=[o[0]+$t,o[1]+$n];let $e=[],$s=_.find($=>$.x==p[0]&&$.y==p[1]);if($s){m=[],1>=Math.abs($t)&&1>=Math.abs($n)?"auto(1+)"==a&&(0==$t||0==$n)?m.push([o[0]+2*$t,o[1]+2*$n]):0==$t?(m.push([o[0]-1,o[1]+$n]),m.push([o[0]+1,o[1]+$n])):0==$n?(m.push([o[0]+$t,o[1]-1]),m.push([o[0]+$t,o[1]+1])):"auto(1,2hv+)"==a?(m.push([o[0]+2*$t,o[1]+$n]),m.push([o[0]+$t,o[1]+2*$n])):(m.push([o[0],o[1]+$n]),m.push([o[0]+$t,o[1]])):"auto(1,2hv++)"==a&&Math.abs($t)>=2&&Math.abs($n)>=2?(m.push([o[0]+$t,o[1]+$n/2]),m.push([o[0]+$t/2,o[1]+$n])):"auto(1,2hv)"==a?m.push([o[0]+N[0],o[1]+N[1]]):0==$t?(m.push([o[0]-1,o[1]+$n]),m.push([o[0]+1,o[1]+$n])):0==$n&&(m.push([o[0]+$t,o[1]-1]),m.push([o[0]+$t,o[1]+1]));let $a=1;for(let $l of m){let $u=_.find($=>$.x==$l[0]&&$.y==$l[1]);$u&&$u.c>=$s.c+userFleets[$].scanBypassPercent/100&&($e.push([$l[0],$l[1]]),$a>$u.c&&($a=$u.c))}if($e.length>=2)for(let $r of $e){let $i=_.find($=>$.x==$r[0]&&$.y==$r[1]);$i&&$i.c>=$a+userFleets[$].scanBypassPercent/100&&($e=[[$r[0],$r[1]]])}}$e.length?userFleets[$].scanAutoMoveTo=$e[Math.floor(Math.random()*$e.length)]:userFleets[$].scanAutoMoveTo=p}}}if(!userFleets[$].scanAutoMoveTo){let $c=o[0],$f=o[1];$c>t-4&&$c<t+4&&$f>n-4&&$f<n+4?(.5>Math.random()?.5>Math.random()?$c++:$c--:.5>Math.random()?$f++:$f--,cLog(3,`${FleetTimeStamp(userFleets[$].label)} SAM found no best sector and no good direction, moving random to`,$c,"/",$f)):($c<t&&$c++,$c>t&&$c--,$f<n&&$f++,$f>n&&$f--,cLog(3,`${FleetTimeStamp(userFleets[$].label)} SAM found no best sector and no good direction, moving back to start to`,$c,"/",$f)),userFleets[$].scanAutoMoveTo=[$c,$f]}_||(userFleets[$].fontColor="yellow",updateAssistStatus(userFleets[$]))}
+
 	async function operateFleet(i) {
         if (globalErrorTracker.errorCount > 9) toggleAssistant('ERROR');
 
@@ -6541,7 +7148,13 @@ async function sendAndConfirmTx(txSerialized, lastValidBlockHeight, txHash, flee
 		if(moving) cLog(2, `${FleetTimeStamp(userFleets[i].label)} Operating moving fleet`);
 		if(userFleets[i].resupplying || mining) return;
 		if(!onTarget && waitingForWarpCD) return;
-		if(scanning && onTarget && waitingForScan) return;
+		let forceNewAutoMoveTarget = false;
+		if(scanning && onTarget && waitingForScan) {
+			if(userFleets[i].scanAutoMoveTo && userFleets[i].scanCheckWhileCooldownLeft && !await scanTargetStillValid(i,userFleets[i].scanAutoMoveTo))
+				forceNewAutoMoveTarget = true;
+			else
+				return;
+		}
 
 		try {
 				let fleetSavedData = await GM.getValue(userFleets[i].publicKey.toString(), '{}');
@@ -6564,6 +7177,11 @@ async function sendAndConfirmTx(txSerialized, lastValidBlockHeight, txHash, flee
 					updateFleetState(userFleets[i], fleetState);
 				}
 
+				if(fleetState == 'Respawn')
+				{
+					execRespawnToLoadingBay(userFleets[i]);
+				}
+
 				if ((userFleets[i].iterCnt < 2) && fleetState == 'StarbaseLoadingBay') {
 					if(fleetParsedData.assignment == 'Scan' || fleetParsedData.assignment == 'Mine' || fleetParsedData.assignment == 'Transport')
 						await execStartupUndock(i, fleetParsedData.assignment);
@@ -6574,6 +7192,9 @@ async function sendAndConfirmTx(txSerialized, lastValidBlockHeight, txHash, flee
 				}
 				else if (fleetParsedData.assignment == 'Scan' && fleetState == 'Idle') {
 					updateFleetState(userFleets[i], fleetState);
+					let scanBlockPattern = globalSettings.scanBlockPattern;
+					if(userFleets[i].scanPattern) scanBlockPattern=userFleets[i].scanPattern;
+					if(!scanBlockPattern.includes('auto')) {
 					startupScanBlockCheck(i, fleetCoords);
 					const curentSBI = userFleets[i].scanBlockIdx;
 					await handleScan(i, fleetCoords, userFleets[i].scanBlock[curentSBI]);
@@ -6582,6 +7203,14 @@ async function sendAndConfirmTx(txSerialized, lastValidBlockHeight, txHash, flee
 
 					//Move instantly if a move is needed as the result of the previous scan
 					if(curentSBI !== userFleets[i].scanBlockIdx)	await handleScan(i, fleetCoords, userFleets[i].scanBlock[userFleets[i].scanBlockIdx]);
+					} else {
+						if(!userFleets[i].scanAutoMoveTo || forceNewAutoMoveTarget) await handleScanAutoMovement(i,fleetCoords);
+						let currentAutoMove = [userFleets[i].scanAutoMoveTo[0], userFleets[i].scanAutoMoveTo[1]];
+						await handleScan(i, fleetCoords, userFleets[i].scanAutoMoveTo);
+						if(!userFleets[i].scanAutoMoveTo) await handleScanAutoMovement(i,fleetCoords);
+						if(userFleets[i].stopping) return;
+						if(userFleets[i].scanAutoMoveTo && (currentAutoMove[0] != userFleets[i].scanAutoMoveTo[0] || currentAutoMove[1] != userFleets[i].scanAutoMoveTo[1])) await handleScan(i, fleetCoords, userFleets[i].scanAutoMoveTo);
+					}
 				}
 				else if (fleetParsedData.assignment == 'Mine') {
 					if(fleetState == 'MineAsteroid' && !userFleets[i].state.includes('Mine')) {
@@ -6611,6 +7240,7 @@ async function sendAndConfirmTx(txSerialized, lastValidBlockHeight, txHash, flee
 				}
 		} catch (err) {
 				cLog(1,`${FleetTimeStamp(userFleets[i].label)} ERROR`, err);
+			logError('Error while operating fleet: ' + (err.message ? err.message : err));
 		}
 	}
 
@@ -6781,8 +7411,21 @@ async function sendAndConfirmTx(txSerialized, lastValidBlockHeight, txHash, flee
         craftParsedData.state = userCraft.state;
         craftParsedData.craftingId = userCraft.craftingId;
         craftParsedData.craftingCoords = userCraft.craftingCoords;
+        craftParsedData.feeAtlas = userCraft.feeAtlas;
+	craftParsedData.errorCount = userCraft.errorCount;
         await GM.setValue(userCraft.label, JSON.stringify(craftParsedData));
     }
+
+    async function craftTimeoutAfterError(userCraft) {
+		let craftSavedData = await GM.getValue(userCraft.label, '{}');
+        let craftParsedData = JSON.parse(craftSavedData);
+		craftParsedData.errorCount = (typeof craftParsedData.errorCount == "undefined" ? 1 : craftParsedData.errorCount + 1);
+        await GM.setValue(userCraft.label, JSON.stringify(craftParsedData));
+        const waitMinutes = Math.min(20, craftParsedData.errorCount * 2 - 1);
+        updateFleetState(userCraft, userCraft.state + " (" + waitMinutes + "m)", true);
+        return waitMinutes * 60000;
+	}
+
 
     async function startCraft(userCraft) {
         if (!enableAssistant) return;
@@ -6876,7 +7519,7 @@ async function sendAndConfirmTx(txSerialized, lastValidBlockHeight, txHash, flee
 				//...is true. But when there was ANY completed craft at this starbase (even a manual one) the block was always unnecessarily executed
 				//todo: the later loop through completedCraftingProcesses isn't needed anymore, because we should only have exactly one completed process (this job)
 	                        if (craftingProcess.account.endTime.toNumber() < craftTime.starbaseTime && [2,3].includes(craftingProcess.account.status) && userCraft.craftingId && craftingProcess.account.craftingId.toNumber() == userCraft.craftingId) {
-	                            completedCraftingProcesses.push({craftingProcess: craftingProcess.publicKey, craftingInstance: craftingInstance.publicKey, recipe: craftingProcess.account.recipe, status: craftingProcess.account.status, inputsChecksum: craftingProcess.account.inputsChecksum, outputsChecksum: craftingProcess.account.outputsChecksum, craftingId: craftingProcess.account.craftingId.toNumber()});
+	                            completedCraftingProcesses.push({craftingProcess: craftingProcess.publicKey, craftingInstance: craftingInstance.publicKey, recipe: craftingProcess.account.recipe, status: craftingProcess.account.status, inputsChecksum: craftingProcess.account.inputsChecksum, outputsChecksum: craftingProcess.account.outputsChecksum, craftingId: craftingProcess.account.craftingId.toNumber(), quantity: craftingProcess.account.quantity.toNumber() });
 	                        } else if (userCraft.craftingId && craftingProcess.account.craftingId.toNumber() == userCraft.craftingId) {
 	                            let craftRecipe = craftRecipes.find(item => item.publicKey.toString() === craftingProcess.account.recipe.toString());
 	                            let calcEndTime = Math.max(craftingProcess.account.endTime.toNumber() - craftTime.starbaseTime, 0);
@@ -6887,8 +7530,8 @@ async function sendAndConfirmTx(txSerialized, lastValidBlockHeight, txHash, flee
 	                            updateFleetState(userCraft, craftTimeStr);
 	                            await updateCraft(userCraft);
 	                            //update less frequently if we have a long-running crafting task (3 minutes if remaining time >12 minutes, 2 minutes if remaining time >8 minutes), update faster if <60 seconds left
-	                            if(adjustedEndTime > 720) localTimeout = 180000;
-	                            else if(adjustedEndTime > 480) localTimeout = 120000;
+	                            if(adjustedEndTime > 900) localTimeout = 300000;
+	                            else if(adjustedEndTime > 180) localTimeout = adjustedEndTime * 1000 / 3;
 	                            else if(adjustedEndTime < 60) localTimeout = 30000;
 	                        }
 	                    } else {
@@ -6927,11 +7570,12 @@ async function sendAndConfirmTx(txSerialized, lastValidBlockHeight, txHash, flee
 	                        if (!userCraft.state.includes('ERROR')) {
 	                            if (userCraft.craftingId && craftingProcess.craftingId == userCraft.craftingId) {
 	                                userCraft.craftingId = 0;
+					userCraft.errorCount = 0;
 	                                updateFleetState(userCraft, 'Idle');
 	                                await updateCraft(userCraft);
 	                            }
 	                        }
-				else { localTimeout = 120000; }
+				else { localTimeout = await craftTimeoutAfterError(userCraft); }
 	                    }
 	                }
 
@@ -6944,12 +7588,13 @@ async function sendAndConfirmTx(txSerialized, lastValidBlockHeight, txHash, flee
 	                        if (!userCraft.state.includes('ERROR')) {
 	                            if (userCraft.craftingId && upgradeProcess.craftingId == userCraft.craftingId) {
 	                                userCraft.craftingId = 0;
+					userCraft.errorCount = 0;
 	                                updateFleetState(userCraft, 'Idle');
 	                                await updateCraft(userCraft);
 	                                //await GM.setValue(userCraft.label, JSON.stringify(userCraft));
 	                            }
 	                        }
-				else { localTimeout = 120000; }
+				else { localTimeout = await craftTimeoutAfterError(userCraft); }
 	                    }
 	                }
 		    }
@@ -7050,10 +7695,12 @@ async function sendAndConfirmTx(txSerialized, lastValidBlockHeight, txHash, flee
                             updateFleetState(userCraft, activityInfo + ' [' + activityTimeStr + ']');
                             userCraft.craftingId = result.craftingId;
                             userCraft.craftingCoords = userCraft.coordinates;
+                            userCraft.feeAtlas = result.feeAtlas;
+                            userCraft.errorCount = 0;
                             await updateCraft(userCraft);
                             //await GM.setValue(userCraft.label, JSON.stringify(userCraft));
 		        }
-			else { localTimeout = 120000; }
+			else { localTimeout = await craftTimeoutAfterError(userCraft); }
                     }
                 } else if (userCraft.state === 'Idle') {
                     //updateFleetState(userCraft, 'Waiting for crew/material');
@@ -7093,7 +7740,7 @@ async function sendAndConfirmTx(txSerialized, lastValidBlockHeight, txHash, flee
 			if(fleetParsedData.assignment) updateFleetState(userFleets[i], 'Starting');
 
 			//Stagger fleet starts by 1000ms to avoid overloading the RPC
-			setTimeout(() => { startFleet(i);	}, 1000 * (i + 1));
+			setTimeout(() => { startFleet(i);	}, 1500 * (i + 1));
 		}
 
         for (let i=1; i < globalSettings.craftingJobs+1; i++) {
@@ -7188,6 +7835,10 @@ async function sendAndConfirmTx(txSerialized, lastValidBlockHeight, txHash, flee
 	// And we ignore the start/stop button as long as the init sequence isn't done yet.
 	// Added Docking and Undocking to the wait sequence, so a fleet finishes the docking->load/unload->undock loop first (and doesn't get interrupted in between).
         if((!initComplete) || ((!newState) && globalWaitForStopSequence)) return;
+        if(autoSpanRef.innerHTML=='Reload') {
+		window.location.reload();
+		return;
+	}
         if (enableAssistant === true || newState) {
             globalWaitForStopSequence = true;
             let waitForSequence = true;
@@ -7208,7 +7859,7 @@ async function sendAndConfirmTx(txSerialized, lastValidBlockHeight, txHash, flee
                 await wait(5000);
             }
             globalWaitForStopSequence = false;
-            autoSpanRef.innerHTML = newState ? newState : 'Start';
+            autoSpanRef.innerHTML = newState ? newState : 'Reload';
         } else {
             enableAssistant = true;
             await startAssistant();
@@ -7499,10 +8150,19 @@ async function sendAndConfirmTx(txSerialized, lastValidBlockHeight, txHash, flee
 				let fleetDest = fleetParsedData && fleetParsedData.dest ? fleetParsedData.dest : '';
 				let fleetScanBlock = fleetParsedData && fleetParsedData.scanBlock ? fleetParsedData.scanBlock : [];
 				let fleetScanMin = fleetParsedData && fleetParsedData.scanMin ? fleetParsedData.scanMin : 15;
-				let fleetScanMin2 = fleetParsedData && fleetParsedData.scanMin2 ? fleetParsedData.scanMin2 : 5;
+				let fleetScanMin2 = fleetParsedData && fleetParsedData.scanMin2 ? fleetParsedData.scanMin2 : 0;
+				let fleetScanMin3 = fleetParsedData && fleetParsedData.scanMin3 ? fleetParsedData.scanMin3 : 0;
 				let fleetScanPattern = fleetParsedData && fleetParsedData.scanPattern ? fleetParsedData.scanPattern : '';
 				let fleetScanPatternLength = fleetParsedData && fleetParsedData.scanPatternLength ? fleetParsedData.scanPatternLength : 0;
-				let fleetScanMove = fleetParsedData && fleetParsedData.scanMove == 'false' || false ? false : true;
+				let fleetSearchDist = fleetParsedData && fleetParsedData.scanSearchDist ? fleetParsedData.scanSearchDist : 15;
+				let fleetClusterFactor = fleetParsedData && fleetParsedData.scanClusterFactor ? fleetParsedData.scanClusterFactor : 50;
+				let fleetScanNeighborhoodMinGood = fleetParsedData && fleetParsedData.scanNeighborhoodMinGood ? fleetParsedData.scanNeighborhoodMinGood : 3;
+				let fleetScanCheckWhileCooldownLeft = fleetParsedData && fleetParsedData.scanCheckWhileCooldownLeft ? fleetParsedData.scanCheckWhileCooldownLeft : 0;
+				//let fleetScanCheckWhileCooldownLeftProb = fleetParsedData && fleetParsedData.scanCheckWhileCooldownLeftProb ? fleetParsedData.scanCheckWhileCooldownLeftProb : 0;
+				let fleetScanBypassPercent = fleetParsedData && fleetParsedData.scanBypassPercent ? fleetParsedData.scanBypassPercent : 4;
+				let fleetScanHomeAtPercent = fleetParsedData && fleetParsedData.scanHomeAtPercent ? fleetParsedData.scanHomeAtPercent : 0;
+				//let fleetScanMove = fleetParsedData && fleetParsedData.scanMove == 'false' || false ? false : true;
+				let fleetScanMove = fleetParsedData && fleetParsedData.scanMove;
 				let fleetMineResource = fleetParsedData && fleetParsedData.mineResource ? fleetParsedData.mineResource : '';
 				let fleetStarbase = fleetParsedData && fleetParsedData.starbase ? fleetParsedData.starbase : '';
 				let fleetMoveType = fleetParsedData && fleetParsedData.moveType ? fleetParsedData.moveType : 'warp';
@@ -7597,8 +8257,16 @@ async function sendAndConfirmTx(txSerialized, lastValidBlockHeight, txHash, flee
 					scanStrikes: 0,
 					scanMin: fleetScanMin,
 					scanMin2: fleetScanMin2,
+					scanMin3: fleetScanMin3,
 					scanPattern: fleetScanPattern,
 					scanPatternLength: fleetScanPatternLength,
+					scanSearchDist: fleetSearchDist,
+					scanClusterFactor: fleetClusterFactor,
+					scanNeighborhoodMinGood: fleetScanNeighborhoodMinGood,
+					scanCheckWhileCooldownLeft: fleetScanCheckWhileCooldownLeft,
+					//scanCheckWhileCooldownLeftProb: fleetScanCheckWhileCooldownLeftProb,
+					scanBypassPercent: fleetScanBypassPercent,
+					scanHomeAtPercent: fleetScanHomeAtPercent,
 					scanMove: fleetScanMove,
 					foodCnt: currentFoodCnt ? currentFoodCnt.account.data.parsed.info.tokenAmount.uiAmount : 0,
 					sduCnt: currentSduCnt ? currentSduCnt.account.data.parsed.info.tokenAmount.uiAmount : 0,
@@ -7664,13 +8332,13 @@ async function sendAndConfirmTx(txSerialized, lastValidBlockHeight, txHash, flee
 			observer && observer.disconnect();
 			let assistCSS = document.createElement('style');
 			const statusPanelOpacity = globalSettings.statusPanelOpacity / 100;
-			let assistCSSString = `.assist-modal {display: none; position: fixed; z-index: 2; padding-top: 100px; left: 0; top: 0; width: 100%; height: 100%; overflow: auto; background-color: rgba(0,0,0,0.4); text-align:center; } .assist-modal-content {position: relative; display: inline-block; text-align:left; background-color: rgb(41, 41, 48); margin: auto; padding: 0; border: 1px solid #888; width: 785px; min-width: 450px; max-width: 95%; height: auto; min-height: 50px; max-height: 95%; overflow-y: auto; box-shadow: 0 4px 8px 0 rgba(0,0,0,0.2),0 6px 20px 0 rgba(0,0,0,0.19); -webkit-animation-name: animatetop; -webkit-animation-duration: 0.4s; animation-name: animatetop; animation-duration: 0.4s;} .assist-modal-save { font-size:100%; font-weight:bold; vertical-align:top; margin-left:0.5em; } #assist-modal-error {color: red; margin-left: 5px; margin-right: 5px; font-size: 16px; display:block; } .assist-modal-header-right {color: rgb(255, 190, 77); margin-left: auto !important; font-size: 20px;} .assist-btn {background-color: rgb(41, 41, 48); color: rgb(255, 190, 77); margin-left: 2px; margin-right: 2px;} .assist-btn:hover {background-color: rgba(255, 190, 77, 0.2);} .assist-modal-close { font-size:130%; line-height:80%; vertical-align:middle; } .assist-modal-close:hover, .assist-modal-close:focus {font-weight: bold; text-decoration: none; cursor: pointer;} .assist-modal-btn {color: rgb(255, 190, 77); padding: 5px 5px; margin-right: 5px; text-decoration: none; background-color: rgb(41, 41, 48); border: none; cursor: pointer;} .assist-modal-save:hover { background-color: rgba(255, 190, 77, 0.2); } .assist-modal-header {display: flex; position:sticky; z-index:1000; top:0; left:0; align-items: center; padding: 2px 16px; background-color: #544735; border-bottom: 2px solid rgb(255, 190, 77); color: rgb(255, 190, 77);} .assist-modal-body {padding: 2px 16px; font-size: 12px;} .assist-modal-body > table, .assist-modal-body table.main table {width: 100%;border-collapse: collapse;} .assist-modal-body th, .assist-modal-body td {padding:0 7px 0 0; line-height:130%;} #assistStatus {background-color: rgba(0,0,0,${statusPanelOpacity}); opacity: ${statusPanelOpacity}; backdrop-filter: blur(10px); position: absolute; top: 82px; left: 10px; z-index: 1;} #assistStarbaseStatus {background-color: rgba(0,0,0,${statusPanelOpacity}); opacity: ${statusPanelOpacity}; backdrop-filter: blur(10px); position: absolute; top: 80px; right: 20px; z-index: 1;} #assistCheck {background-color: rgba(0,0,0,0.75); backdrop-filter: blur(10px); position: absolute; margin: auto; left: 0; right: 0; top: 100px; width: 650px; min-width: 450px; max-width: 75%; z-index: 1;} .dropdown { position: absolute; display: none; margin-top: 25px; margin-left: 152px; background-color: rgb(41, 41, 48); min-width: 120px; box-shadow: 0 8px 16px 0 rgba(0, 0, 0, 0.2); z-index: 2; } .dropdown.show { display: block; } .assist-btn-alt { color: rgb(255, 190, 77); padding: 12px 16px; text-decoration: none; display: block; background-color: rgb(41, 41, 48); border: none; cursor: pointer; } .assist-btn-alt:hover { background-color: rgba(255, 190, 77, 0.2); } #checkresults { padding: 5px; margin-top: 20px; border: 1px solid grey; border-radius: 8px;} .dropdown button {width: 100%; text-align: left;} #assistModal table {border-collapse: collapse;} .assist-scan-row, .assist-scan2-row, .assist-mine-row, .assist-transport-row {background-color: rgba(255, 190, 77, 0.1); border-left: 1px solid white; border-right: 1px solid white; border-bottom: 1px solid white} .show-top-border {background-color: rgba(255, 190, 77, 0.1); border-left: 1px solid white; border-right: 1px solid white; border-top: 1px solid white;} #fleetTable { margin-top: 8px } #assistModal .assist-modal-content { width:auto } .transport-to-target select, .transport-to-starbase select { max-width: 11.5em; } #assistModal .assist-modal-body option { background-color:white } #assistModal .assist-modal-body > table { width: auto } #fleetTable tbody:nth-child(1) td { position:sticky; top:62px; background-color: #292930; padding: 5px 0 2px 0; } `;
-			assistCSSString += ` #assistStats {background-color: rgba(0,0,0,${statusPanelOpacity}); opacity: ${statusPanelOpacity}; backdrop-filter: blur(10px); position: absolute; top: 80px; right: 20px; z-index: 1; } #assistStats table { border-collapse: collapse; border-spacing:1px; } #assistStats td, #assistStats th { padding:0 7px 0 0; }`; // statsadd
+			let assistCSSString = `.assist-modal {display: none; position: fixed; z-index: 20; padding-top: 100px; left: 0; top: 0; width: 100%; height: 100%; overflow: auto; background-color: rgba(0,0,0,0.4); text-align:center; } .assist-modal-content {position: relative; display: inline-block; text-align:left; background-color: rgb(41, 41, 48); margin: auto; padding: 0; border: 1px solid #888; width: 785px; min-width: 450px; max-width: 95%; height: auto; min-height: 50px; max-height: 95%; overflow-y: auto; box-shadow: 0 4px 8px 0 rgba(0,0,0,0.2),0 6px 20px 0 rgba(0,0,0,0.19); -webkit-animation-name: animatetop; -webkit-animation-duration: 0.4s; animation-name: animatetop; animation-duration: 0.4s;} .assist-modal-save { font-size:100%; font-weight:bold; vertical-align:top; margin-left:0.5em; } #assist-modal-error {color: red; margin-left: 5px; margin-right: 5px; font-size: 16px; display:block; } .assist-modal-header-right {color: rgb(255, 190, 77); margin-left: auto !important; font-size: 20px;} .assist-btn {background-color: rgb(41, 41, 48); color: rgb(255, 190, 77); margin-left: 2px; margin-right: 2px; z-index:10} .assist-btn:hover {background-color: rgba(255, 190, 77, 0.2);} .assist-modal-close { font-size:130%; line-height:80%; vertical-align:middle; } .assist-modal-close:hover, .assist-modal-close:focus {font-weight: bold; text-decoration: none; cursor: pointer;} .assist-modal-btn {color: rgb(255, 190, 77); padding: 5px 5px; margin-right: 5px; text-decoration: none; background-color: rgb(41, 41, 48); border: none; cursor: pointer;} .assist-modal-save:hover { background-color: rgba(255, 190, 77, 0.2); } .assist-modal-header {display: flex; position:sticky; z-index:1000; top:0; left:0; align-items: center; padding: 2px 16px; background-color: #544735; border-bottom: 2px solid rgb(255, 190, 77); color: rgb(255, 190, 77);} .assist-modal-body {padding: 2px 16px; font-size: 12px;} .assist-modal-body > table, .assist-modal-body table.main table {width: 100%;border-collapse: collapse;} .assist-modal-body th, .assist-modal-body td {padding:0 7px 0 0; line-height:130%;} #assistStatus {background-color: rgba(0,0,0,${statusPanelOpacity}); opacity: ${statusPanelOpacity}; backdrop-filter: blur(10px); position: absolute; top: 82px; left: 10px; z-index: 10;} #assistStarbaseStatus {background-color: rgba(0,0,0,${statusPanelOpacity}); opacity: ${statusPanelOpacity}; backdrop-filter: blur(10px); position: absolute; top: 80px; right: 20px; z-index: 10;} #assistCheck {background-color: rgba(0,0,0,0.75); backdrop-filter: blur(10px); position: absolute; margin: auto; left: 0; right: 0; top: 100px; width: 650px; min-width: 450px; max-width: 75%; z-index: 10;} .dropdown { position: absolute; display: none; margin-top: 25px; margin-left: 152px; background-color: rgb(41, 41, 48); min-width: 120px; box-shadow: 0 8px 16px 0 rgba(0, 0, 0, 0.2); z-index: 20; } .dropdown.show { display: block; } .assist-btn-alt { color: rgb(255, 190, 77); padding: 12px 16px; text-decoration: none; display: block; background-color: rgb(41, 41, 48); border: none; cursor: pointer; } .assist-btn-alt:hover { background-color: rgba(255, 190, 77, 0.2); } #checkresults { padding: 5px; margin-top: 20px; border: 1px solid grey; border-radius: 8px;} .dropdown button {width: 100%; text-align: left;} #assistModal table {border-collapse: collapse;} .assist-scan-row, .assist-scan2-row, .assist-mine-row, .assist-transport-row {background-color: rgba(255, 190, 77, 0.1); border-left: 1px solid white; border-right: 1px solid white; border-bottom: 1px solid white} .show-top-border {background-color: rgba(255, 190, 77, 0.1); border-left: 1px solid white; border-right: 1px solid white; border-top: 1px solid white;} #fleetTable { margin-top: 8px } #assistModal .assist-modal-content { width:auto } .transport-to-target select, .transport-to-starbase select { max-width: 11.5em; } #assistModal .assist-modal-body option { background-color:white } #assistModal .assist-modal-body > table { width: auto } #fleetTable tbody:nth-child(1) td { position:sticky; top:62px; background-color: #292930; padding: 5px 0 2px 0; } `;
+			assistCSSString += ` #assistStats {background-color: rgba(0,0,0,${statusPanelOpacity}); opacity: ${statusPanelOpacity}; backdrop-filter: blur(10px); position: absolute; top: 80px; right: 20px; z-index: 10; } #assistStats table { border-collapse: collapse; border-spacing:1px; } #assistStats td, #assistStats th { padding:0 7px 0 0; }`; // statsadd
 			assistCSSString += ` #autoFeeData { display:none; } #automaticFee:checked ~ #autoFeeData { display:block; }`;
 			assistCSSString += ` #settingsModal nav label { width:100px; display:block; padding: 15px 15px; border-top: 1px solid silver; border-right: 1px solid silver; background-color: #888; color: #ddd; } #settingsModal nav label:nth-child(1) { border-left: 1px solid silver; } #settingsModal .tabbed > input, #settingsModal .tabbed menu li { display: none;} #settingsModal nav label:hover { background: hsl(210,50%,40%); } #settingsModal nav label:active { background: #ffffff; } #settingsModal .tabbed menu>li { padding: 20px; width: 100%; border: 1px solid silver; background-color: #f4f4f4; line-height: 1.5em; letter-spacing: 0.3px; color: #444; } #settingsModal .tabbed menu { padding-left:100px } #settingsModal nav { float:left } #settingsModal .tabbed menu li div { margin-bottom: 10px; } #settingsModal .tabbed menu li small { display:block; line-height:130%; } `;
 			assistCSSString += ` #settingsModal #tab_general:checked ~ menu .tab_general, #settingsModal #tab_fees:checked ~ menu .tab_fees, #settingsModal #tab_crafting:checked ~ menu .tab_crafting, #settingsModal #tab_scanning:checked ~ menu .tab_scanning, #settingsModal #tab_fleets:checked ~ menu .tab_fleets, #settingsModal #tab_advanced:checked ~ menu .tab_advanced { display: block; }`;
 			assistCSSString += ` #settingsModal #tab_general:checked ~ nav label[for="tab_general"], #settingsModal #tab_fees:checked ~ nav label[for="tab_fees"], #settingsModal #tab_crafting:checked ~ nav label[for="tab_crafting"], #settingsModal #tab_scanning:checked ~ nav label[for="tab_scanning"], #settingsModal #tab_fleets:checked ~ nav label[for="tab_fleets"], #settingsModal #tab_advanced:checked ~ nav label[for="tab_advanced"] { background: #fc0; color: #111; position: relative; border-bottom: none; }`;
-			assistCSSString += ` .tooltip { position: relative; display: inline-block; border-bottom: 1px dotted white; line-height: 105%; margin:0 2px 0 2px; } .tooltip .tooltiptext { visibility: hidden; font-weight:normal; border:1px solid #45382d; width: max-content; max-width:250px; box-shadow: 5px 5px 5px rgba(0,0,0,0.4); line-height:130%; background-color: #1f1914; color: #eee; text-align: left; border-radius: 6px; padding: 8px; position: absolute; z-index: 1; } .tooltip:hover .tooltiptext { visibility: visible; } `;
+			assistCSSString += ` .tooltip { position: relative; display: inline-block; border-bottom: 1px dotted white; line-height: 105%; margin:0 2px 0 2px; } .tooltip .tooltiptext { visibility: hidden; font-weight:normal; border:1px solid #45382d; width: max-content; max-width:250px; box-shadow: 5px 5px 5px rgba(0,0,0,0.4); line-height:130%; background-color: #1f1914; color: #eee; text-align: left; border-radius: 6px; padding: 8px; position: absolute; z-index: 10; } .tooltip:hover .tooltiptext { visibility: visible; } `;
 			assistCSS.innerHTML = assistCSSString;
 
 			let assistModal = document.createElement('div');
@@ -7680,7 +8348,21 @@ async function sendAndConfirmTx(txSerialized, lastValidBlockHeight, txHash, flee
 			let assistModalContent = document.createElement('div');
 			assistModalContent.classList.add('assist-modal-content');
 			let iconStr = 'data:image/png;base64,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';
-			assistModalContent.innerHTML = '<div class="assist-modal-header"><img src="' + iconStr + '" /><div style="text-align:center;padding-left: 15px;">SLYA v' + GM_info.script.version + '<div style="font-size:65%">(<span class="tooltip">Info<div class="tooltiptext">You can enter amounts with the suffixes K, M and G. So e.g. "1M" equals "1000000".<br>The "Clean" button will clean up your config file and will remove all fleets that are not shown in the table below (do a backup before!).<br>The "Download" button will save/backup your current config to a file.<br>If something goes wrong, you can import the backup later and paste it in the "Import" textbox.<br>Scanning fleets: If you want to disable "Minimum probability" and/or "Instant strike out below", enter "-1".</div></span>)</div></div><div class="assist-modal-header-right"><button id="cleanBtn" class="assist-modal-btn">Clean</button><button id="undockAllBtn" class="assist-modal-btn">Undock All</button><button id="configImportExport" class="assist-modal-btn">Import</button><button id="downloadConfig" class="assist-modal-btn">Download</button><button class=" assist-modal-btn assist-modal-save">Save</button>&nbsp;&nbsp;<span class="assist-modal-close">&#x2715;</span></div></div><div class="assist-modal-body"><span id="assist-modal-error"></span><table id="fleetTable"><tr><td>Fleet</td><td>Assignment</td><td>Target</td><td>Starbase</td><td>Warp/Subwarp</td><td>Max Cargo</td><td>Max Ammo</td><td>Max Fuel</td></tr></table><hr><strong>Crafting</strong><table id="craftTable"><tr><td></td><td>Starbase</td><td>Crew</td><td>Item | Max Amount</td><td>If stock is below</td><td>Use special ingredient</td></tr></table></div>';
+			let scanAutoInfoStr = 'This feature is meant to be used with Data Runners and Subwarp. SLYA will communicate with a central server to get an optimized scan chance map.<br><h3>Scan patterns:</h3>';
+			scanAutoInfoStr += '<b>auto(1):</b> optimized for Rayfams and Opods, fleets will move max 1 field (straight or diagonally)<br><b>auto(1+):</b> the same, but when the fleet wants to move to a new area, it can also move +1 sector when moving straight (if this sector yields a better chance)<br><b>auto(1,2hv):</b> optimized for Rangers, will move max 1 field diagonally or 2 fields straight (horizontally or vertically).<br><b>auto(1,2hv+):</b> the same, but when the fleet wants to move to a new area, it can also move +1 field, even if the movement lasts slightly longer than the scan cooldown (e.g. X+1, Y-2)<br><b>auto(1,2hv++):</b> The same, but when moving to a new area, fleets can move up to 2 fields diagonally (e.g. X+2 and Y-2)<br>';
+			scanAutoInfoStr += '<h3>Settings:</h3>';
+			scanAutoInfoStr += '<b>Search dist:</b> Limits the search distance around the current fleet position when looking for a good new target area (dist is applied to X and Y, so it results in a square area)<br>';
+			scanAutoInfoStr += '<b>Cluster/distance:</b> The smaller, the more large clusters far away are preferred, even if the distance is large. Try the default first, then you can try to make small changes. Values: 0 to 100<br>';
+			scanAutoInfoStr += '<b>Neighbor min good:</b> If less good fields can be found in the 5x5 square around the fleet, move to a new target area<br>';
+			scanAutoInfoStr += '<b>Check % c/d left:</b> If at least % of the cooldown is left (e.g. 40 = 40%), constantly check if the current sector turns bad (e.g. because another concurrent fleet found SDUs in this sector) and immediately move on if this is the case.<br>';
+			scanAutoInfoStr += '<b>Prob:</b> The probability threshold for the previous setting (e.g. 5 = 5%). So when you set it to e.g. 5% and the sector chance drops to 3% while the fleet is still in cooldown, the fleet will move on.<br>';
+			scanAutoInfoStr += '<b>Bypass %:</b> If an adjacent field has a chance higher than the actual field the fleet wants to move to, move to this "bypass" field instead, even if the distance is slightly larger (e.g. 5 = 5%, so if the fleet wants to move to a field with 3%, but a bypass field has a chance of 8% or more, it uses the bypass field).<br>';
+			scanAutoInfoStr += '<b>Target:</b> When departing from the SB, the fleet will always start at this sector.<br>';
+			scanAutoInfoStr += '<b>Override Length:</b> Defines the area around the fleet target sector where the fleet can operate within. Should be at least 15, better more, so the fleet has enough room. (e.g. fleet target = 0,0 and override length=20 means a square from -20, -20 to 20,20)<br>';
+			scanAutoInfoStr += '<b>Minimum probability:</b> The algo tries to find fields with at least this chance (these fields count as a "good" field)<br>';
+			scanAutoInfoStr += '<b>Home at fuel/dist %:</b> After each movement the fleet checks the fuel that is needed to reach the home base. If you enter a value larger than 100 here (e.g. 130 = 130%) and the fleet has less than 130% of the fuel needed for the way back, it will start moving towards the home base and scan along. It can move up to 2 fields (essentially it uses the "auto(1,2hv++)" pattern now), then it scans, then it moves again. It will still try to find better bypass fields while moving. It only works for fleets that are running out of fuel before running out of cargo space.<br>';
+			let commonInfoStr = 'You can enter amounts with the suffixes K, M and G. So e.g. "1M" equals "1000000".<br>The "Clean" button will clean up your config file and will remove all fleets that are not shown in the table below (do a backup before!).<br>The "Download" button will save/backup your current config to a file.<br>If something goes wrong, you can import the backup later and paste it in the "Import" textbox.';
+			assistModalContent.innerHTML = '<div class="assist-modal-header"><img src="' + iconStr + '" /><div style="text-align:center;padding-left: 15px;">SLYA v' + GM_info.script.version + '<div style="font-size:65%">(<span class="tooltip">Info<div class="tooltiptext">'+commonInfoStr+'</div></span> / <span class="tooltip">Auto scan<div class="tooltiptext" style="max-width:600px">'+scanAutoInfoStr+'</div></span>)</div></div><div class="assist-modal-header-right"><button id="cleanBtn" class="assist-modal-btn">Clean</button><button id="undockAllBtn" class="assist-modal-btn">Undock All</button><button id="configImportExport" class="assist-modal-btn">Import</button><button id="downloadConfig" class="assist-modal-btn">Download</button><button class=" assist-modal-btn assist-modal-save">Save</button>&nbsp;&nbsp;<span class="assist-modal-close">&#x2715;</span></div></div><div class="assist-modal-body"><span id="assist-modal-error"></span><table id="fleetTable"><tr><td>Fleet</td><td>Assignment</td><td>Target</td><td>Starbase</td><td>Warp/Subwarp</td><td>Max Cargo</td><td>Max Ammo</td><td>Max Fuel</td></tr></table><hr><strong>Crafting</strong><table id="craftTable"><tr><td></td><td>Starbase</td><td>Crew</td><td>Item | Max Amount</td><td>If stock is below</td><td>Use special ingredient</td></tr></table></div>';
 			assistModal.append(assistModalContent);
 
 			let settingsModal = document.createElement('div');
@@ -7725,6 +8407,7 @@ async function sendAndConfirmTx(txSerialized, lastValidBlockHeight, txHash, flee
 			settingsModalContentString += '<div>Scan Sector Regeneration Delay <input id="scanSectorRegenTime" type="number" min="0" placeholder="90"></input><br><small>Number of seconds to wait after finding SDU</small></div>';
 			settingsModalContentString += '<div>Scan Pause Time <input id="scanPauseTime" type="number" min="240" max="6000" placeholder="600"></input><br><small>Number of seconds to wait when sectors probabilities are too low</small></div>';
 			settingsModalContentString += '<div>Scan Strike Count <input id="scanStrikeCount" type="number" min="1" max="10" placeholder="3"></input><br><small>Number of low % scans before moving on or pausing</small></div>';
+			settingsModalContentString += '<div>Scan map URL <input id="scanMapURL" type="text" size="40" placeholder="https://slya.de/sdu.json"></input><br><small>The scan map is needed for the scan auto modes. Only enter a custom URL if you know what you are doing :-)</small></div>';
 			settingsModalContentString += '</li>';
 			settingsModalContentString += '<li class="tab_fleets">';
 			settingsModalContentString += '<div>Subwarp for short distances? <input id="subwarpShortDist" type="checkbox"></input><br><small>Should fleets subwarp when travel distance is 1 diagonal square or less?</small></div>';
@@ -7748,6 +8431,8 @@ async function sendAndConfirmTx(txSerialized, lastValidBlockHeight, txHash, flee
 			settingsModalContentString += '<div>Auto Start Script <input id="autoStartScript" type="checkbox"></input><br><small>Should Lab Assistant automatically start after initialization is complete?</small></div>';
 			settingsModalContentString += '<div>Reload On Stuck Fleets <input id="reloadPageOnFailedFleets" type="number" min="0" max="999" placeholder="0"></input><br><small>Automatically refresh the page if this many fleets get stuck (0 = never)</small></div>';
 			settingsModalContentString += '<div>Queue exit warp/subwarp <input id="queueExitWarpSubwarp" type="checkbox"></input><br><small>EXPERIMENTAL: Queue the exit warp/subwarp instruction, so it gets bundled with the following instruction(s). Saves one transaction in most cases. Works only with miners and transporters (a scan instruction can\'t be bundled with any other instruction).</small></div>';
+			settingsModalContentString += '<div>Influx URL <input id="influxURL" type="text" size="40"></input></div>';
+			settingsModalContentString += '<div>Influx auth token <input id="influxAuth" type="text" size="40"></input><br><small>Send statistical data to an Influx DB 3 server (or compatible databases). InfluxDB offers a free cloud service (with a max time range of 6 days). If you use a local installation, go for the free Enterprise at-home version and set --query-file-limit to at least 10000 (this allows a max time range of ~2 months). If installed locally, the URL is e.g.: <i>http://127.0.0.1:8181/api/v3/write_lp?db=slya&precision=auto&no_sync=true</i><br>The auth token MUST be provided, otherwise the request will fail.</small></div>';
 			settingsModalContentString += '<div>E-Mail-Interface <input id="emailInterface" type="text" size="40"></input><br><small>Send errors via the email interface (see "slya-email-interface.php" on GitHub for instructions).</small><button id="emailInterfaceTest">Test the interface URL</button> Result: <span id="emailInterfaceTestResult"></span></div>';
 			settingsModalContentString += '<div>';
 			settingsModalContentString += 'email fleet ix errors? <input id="emailFleetIxErrors" type="checkbox"></input><br>';
