@@ -7652,7 +7652,7 @@ async function sendAndConfirmTx(txSerialized, lastValidBlockHeight, txHash, flee
                     let craftThresholdReached = true;
                     if(activityType == 'Crafting') {
                         const atlasNeeded = Number((craftAmount * targetRecipe.craftRecipe.feeAmount).toFixed(10));
-                        const atlasParsedBalance = await solanaReadConnection.getParsedTokenAccountsByOwner(userPublicKey,{ mint: new solanaWeb3.PublicKey('ATLA5nAaVRfH6BNwD4SAyWp96EdQaAh6bBmGeTx956sx')} );
+                        const atlasParsedBalance = await solanaReadConnection.getParsedTokenAccountsByOwner(userPublicKey,{ mint: new solanaWeb3.PublicKey('En3GRDgFiY8ZoHA86k7LwJkBrB7u1UrjxENpni3CFe1C')} );
                         const atlasBalance = (atlasParsedBalance.value[0] ? atlasParsedBalance.value[0].account.data.parsed.info.tokenAmount.uiAmount : 0);
                         cLog(3, FleetTimeStamp(userCraft.label), 'atlas needed: ', atlasNeeded, ', atlas available: ', atlasBalance);
                         if(atlasBalance < atlasNeeded) {
@@ -7772,7 +7772,8 @@ async function sendAndConfirmTx(txSerialized, lastValidBlockHeight, txHash, flee
 		if((tokenCheckCounter%10)==0) { // check token balance every 100 seconds
 			cLog(1, 'Checking SOL and Atlas balance');
 			const solBalance = await solanaReadConnection.getBalance(userPublicKey);
-			const atlasBalance = await solanaReadConnection.getParsedTokenAccountsByOwner(userPublicKey,{ mint: new solanaWeb3.PublicKey('ATLA5nAaVRfH6BNwD4SAyWp96EdQaAh6bBmGeTx956sx')} );
+			const atlasBalance = await solanaReadConnection.getParsedTokenAccountsByOwner(userPublicKey,{ mint: new solanaWeb3.PublicKey('En3GRDgFiY8ZoHA86k7LwJkBrB7u1UrjxENpni3CFe1C')} );
+			console.log(`ATLAS balance = ${atlasBalance}`);
 			document.getElementById('assist-modal-balance').innerHTML='SOL:'+((solBalance/1000000000).toFixed(3))+' Atlas:'+(atlasBalance.value[0] ? parseInt(atlasBalance.value[0].account.data.parsed.info.tokenAmount.uiAmount) : 0);
 		}
 		tokenCheckCounter++;
