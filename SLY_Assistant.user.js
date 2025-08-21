@@ -765,16 +765,23 @@
             let cargoTypeIndex = cargoTypes.findIndex(item => item.account.mint.toString() === resource.account.mint.toString());
             let cargoName = (new TextDecoder().decode(new Uint8Array(resource.account.name)).replace(/\0/g, ''));
             let cargoSize = cargoTypeSizes[cargoTypeIndex];
-            cargoItems.push({'name': cargoName, 'token': resource.account.mint.toString(), 'size': cargoSize});
+			if(cargoSize !== undefined)
+			{
+				cargoItems.push({'name': cargoName, 'token': resource.account.mint.toString(), 'size': cargoSize});
+			}
         }
         for (let craftable of craftableItems) {
             let cargoTypeIndex = cargoTypes.findIndex(item => item.account.mint.toString() === craftable.account.mint.toString());
             let cargoName = (new TextDecoder().decode(new Uint8Array(craftable.account.namespace)).replace(/\0/g, ''));
             let cargoSize = cargoTypeSizes[cargoTypeIndex];
-            cargoItems.push({'name': cargoName, 'token': craftable.account.mint.toString(), 'size': cargoSize});
+			if(cargoSize !== undefined)
+			{
+				cargoItems.push({'name': cargoName, 'token': craftable.account.mint.toString(), 'size': cargoSize});
+			}
         }
         cargoItems.sort(function (a, b) { return a.name.toUpperCase().localeCompare(b.name.toUpperCase()); });
     }
+
 
     async function getCraftRecipes() {
         let craftingDomain = sageGameAcct.account.crafting.domain;
