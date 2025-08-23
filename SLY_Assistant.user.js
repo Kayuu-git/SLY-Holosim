@@ -72,7 +72,7 @@
 
 	let globalSettings;
 	const settingsGmKey = 'globalSettings';
-	const scanningPatterns = ['square', 'ring', 'spiral', 'up', 'down', 'left', 'right', 'sly', 'auto(1)', 'auto(1+)', 'auto(1,2hv)', 'auto(1,2hv+)', 'auto(1,2hv++)'];
+	const scanningPatterns = ['square', 'ring', 'spiral', 'up', 'down', 'left', 'right', 'sly'];
 	await loadGlobalSettings();
 
 	let errorLog = [];
@@ -177,7 +177,7 @@
 			influxURL: parseStringDefault(globalSettings.influxURL,''),
 			influxAuth: parseStringDefault(globalSettings.influxAuth,''),
 
-			scanMapURL: parseStringDefaultForced(globalSettings.scanMapURL,'https://slya.de/sdu.json'),
+			scanMapURL: parseStringDefaultForced(globalSettings.scanMapURL,''),
 
 			emailFleetIxErrors: parseBoolDefault(globalSettings.emailFleetIxErrors, true),
 			emailCraftIxErrors: parseBoolDefault(globalSettings.emailCraftIxErrors, true),
@@ -4922,7 +4922,7 @@ async function sendAndConfirmTx(txSerialized, lastValidBlockHeight, txHash, flee
 			influxURL: parseStringDefault(document.querySelector('#influxURL').value,''),
 			influxAuth: parseStringDefault(document.querySelector('#influxAuth').value,''),
 
-			scanMapURL: parseStringDefaultForced(document.querySelector('#scanMapURL').value,'https://slya.de/sdu.json'),
+			scanMapURL: parseStringDefaultForced(document.querySelector('#scanMapURL').value,''),
 
 			emailFleetIxErrors: document.querySelector('#emailFleetIxErrors').checked,
 			emailCraftIxErrors: document.querySelector('#emailCraftIxErrors').checked,
@@ -5613,11 +5613,11 @@ async function sendAndConfirmTx(txSerialized, lastValidBlockHeight, txHash, flee
 
 			//Iterate pattern positioning id (or reset to 0 if reached end)
 			if(userFleets[i].scanMove && struckOut)
-				if(!scanBlockPattern.includes('auto')) {
+				//if(!scanBlockPattern.includes('auto')) {
 				userFleets[i].scanBlockIdx = userFleets[i].scanBlockIdx > userFleets[i].scanBlock.length - 2 ? 0 : userFleets[i].scanBlockIdx+1;
-				} else {
-					await handleScanAutoMovement(i, fleetCoords);
-				}
+				//} else {
+				//	await handleScanAutoMovement(i, fleetCoords);
+				//}
 
 			const needPause =
 				(struckOut && !userFleets[i].scanMove) ||
