@@ -4085,7 +4085,7 @@
 
 		let mineResLabel = document.createElement('span');
 		mineResLabel.innerHTML = 'Resource to mine:';
-		let assistResources = ['','Arco','Biomass','Carbon','Copper Ore','Diamond','Hydrogen','Iron Ore','Lumanite','Nitrogen','Rochinol','Silica','Titanium Ore']
+		let assistResources = ['','Arco','Biomass','Carbon','Copper Ore','Diamond','Hydrogen','Iron Ore','Lumanite','Nitrogen','Rochinol','Silica','Titanium Ore', 'Gold Ore']
 		let optionsStr = '';
 		let fleetMineRes = document.createElement('select');
 		assistResources.forEach( function(resource) {optionsStr += '<option value="' + resource + '">' + resource + '</option>';});
