@@ -8183,6 +8183,7 @@
 
 			if (globalSettings.saveProfile && globalSettings.savedProfile && globalSettings.savedProfile.length > 0) {
 				cLog(1, 'Skipping User Profile query, using saved profile');
+				cLog(2, 'initUser: using saved profile', globalSettings.savedProfile);
 				cLog(2, 'initUser: using saved profile', globalSettings.savedProfile[0]);
 				userProfileAcct = new solanaWeb3.PublicKey(globalSettings.savedProfile[0]);
 				userProfileKeyIdx = globalSettings.savedProfile[1];
@@ -8192,7 +8193,7 @@
 				let userProfiles = await solanaReadConnection.getProgramAccounts(profileProgramPK);
 				let foundProf = [];
 				cLog(2, 'initUser: profileList', userProfiles);
-				cLog(2, 'initUser: userProfiles[0]', userProfiles[0]);
+
 				for (let userProf of userProfiles) {
 					let userProfData = userProf.account.data.subarray(30);
 					let iter = 0;
@@ -8246,6 +8247,7 @@
 				userProfileAcct = new solanaWeb3.PublicKey(userProfile.profile);
 				userProfileKeyIdx = userProfile.sage || 0;
 				pointsProfileKeyIdx = userProfile.points || 0;
+				cLog(2, 'initUser: selectedProfile', userProfileAcct.toString());
 				if (globalSettings.saveProfile) {
 					/*
                     globalSettings = {
