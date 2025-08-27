@@ -7662,7 +7662,7 @@
 			let craftTime;
 			let upgradeTime;
 			let starbasePlayer;
-			//if(userCraft.craftingId) {
+			if(userCraft.craftingId) {
 
 			// temporary, when updating SLYA there is no craftingCoords first, so we need a fallback. Can be removed later.
 			if(!userCraft.craftingCoords) {
@@ -7722,40 +7722,6 @@
 				]);
 
 				for (let craftingProcess of craftingProcesses) {
-					if (userCraft.craftingId == 0) {
-						cLog(3, `${FleetTimeStamp(userCraft.label)} Debug: craftingId is 0. Attempting to re-associate with an on-chain process for configured item "${userCraft.item}".`);
-
-						let foundProcessRecipe = craftRecipes.find(item => item.publicKey.toString() === craftingProcess.account.recipe.toString());
-						let isUpgradeRecipe = false;
-						if (!foundProcessRecipe) {
-							foundProcessRecipe = upgradeRecipes.find(item => item.publicKey.toString() === craftingProcess.account.recipe.toString());
-							isUpgradeRecipe = true;
-						}
-
-						if (foundProcessRecipe) {
-							cLog(3, `${FleetTimeStamp(userCraft.label)} Debug: Found on-chain process for recipe: "${foundProcessRecipe.name}".`);
-							let starbasePlayerCargoHoldsAndTokens = await getStarbasePlayerCargoHolds(starbasePlayer);
-							let currentlyNeededRecipeInfo = getTargetRecipe(starbasePlayerCargoHoldsAndTokens, userCraft, Number(userCraft.amount), (userCraft.special ? userCraft.special : ''), userCraft.fullCraft);
-							let currentlyNeededRecipeName = currentlyNeededRecipeInfo ? currentlyNeededRecipeInfo.craftRecipe.name : null;
-
-							if (currentlyNeededRecipeName) {
-								cLog(3, `${FleetTimeStamp(userCraft.label)} Debug: Based on inventory, the currently needed recipe is "${currentlyNeededRecipeName}".`);
-								if (foundProcessRecipe.name === currentlyNeededRecipeName) {
-									cLog(3, `${FleetTimeStamp(userCraft.label)} Debug: Match found! On-chain process recipe "${foundProcessRecipe.name}" matches currently needed recipe "${currentlyNeededRecipeName}". Re-associating.`);
-									userCraft.craftingId = craftingProcess.account.craftingId.toNumber();
-									userCraft.craftingCoords = userCraft.coordinates; // Ensure consistency
-									await updateCraft(userCraft); // Immediately save this re-association
-									cLog(3, `${FleetTimeStamp(userCraft.label)} Debug: Re-associated job with craftingId: ${userCraft.craftingId}.`);
-								} else {
-									cLog(3, `${FleetTimeStamp(userCraft.label)} Debug: On-chain recipe "${foundProcessRecipe.name}" does NOT match currently needed recipe "${currentlyNeededRecipeName}". Skipping re-association.`);
-								}
-							} else {
-								userCraft.craftingId = craftingProcess.account.craftingId.toNumber();
-							}
-						} else {
-							cLog(3, `${FleetTimeStamp(userCraft.label)} Debug: On-chain process recipe for PK ${craftingProcess.account.recipe.toString()} not found in known recipes. Skipping re-association.`);
-						}
-					}
 					if (userCraft.craftingId && craftingProcess.account.craftingId.toNumber() == userCraft.craftingId) craftingProcessRunning = true;
 					if (craftRecipes.some(item => item.publicKey.toString() === craftingProcess.account.recipe.toString())) {
 						//fix: if we found ANY other completed process in this starbase, the time for this crafting process wasn't updated, because the first if statement was true
@@ -7844,11 +7810,11 @@
 					}
 				}
 			}
-			//} else {
-			//userCraft.craftingId = 0; //set first, so the coords are not taken from the last crafting job
-			//updateFleetState(userCraft, 'Idle');
-			//await updateCraft(userCraft);
-			//}
+			} else {
+			userCraft.craftingId = 0; //set first, so the coords are not taken from the last crafting job
+			updateFleetState(userCraft, 'Idle');
+			await updateCraft(userCraft);
+			}
 
 			//we read the current data, as it may have changed by the user in the meantime
 			craftSavedData = await GM.getValue(userCraft.label, '{}');
