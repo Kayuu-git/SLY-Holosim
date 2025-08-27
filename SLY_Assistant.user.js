@@ -344,7 +344,8 @@
 				(error.message.includes('failed to get')) ||
 				(error.message.includes('failed to send')) ||
 				(error.message.includes('NetworkError')) ||
-				(error.message.includes('Unable to complete request'))
+            	(error.message.includes('Unable to complete request')) ||
+            	(error instanceof SyntaxError)
 			);
 			// Added "NetworkError": It happens when Cloudflare blocks the request with Status Code 502. Error message: "TypeError: NetworkError when attempting to fetch resource at [...]"
 		}
@@ -544,6 +545,10 @@
 	cLog(0,'getResourceTokens()');
 	await getResourceTokens();
 
+	console.log('mineItems: ', mineItems);
+	console.log('craftableItems: ', craftableItems);
+	console.log('cargoItems: ', cargoItems);
+
 	cLog(0,'getCraftRecipes()');
 	await getCraftRecipes();
 
@@ -741,45 +746,77 @@
 	async function getCargoTypeSizes(cargoTypes) {
 		let publicKeys = [];
 		let cargoTypeSizes = [];
+
+		cLog(2, `getCargoTypeSizes: Received ${cargoTypes.length} cargoTypes`);
+
 		for(let i=0; i < cargoTypes.length; i++) {
 			publicKeys.push(cargoTypes[i].publicKey);
 		}
-		// 100 is the max data size of getMultipleAccountsInfo
+
 		for (let i = 0; i < publicKeys.length; i += 100) {
 			let publicKeysSlice = publicKeys.slice(i, i + 100);
-			let cargoTypeAccts = await solanaReadConnection.getMultipleAccountsInfo(publicKeysSlice);
-			for(let j=0; j < cargoTypeAccts.length; j++) {
-				let cargoTypeDataExtra = cargoTypeAccts[j].data.subarray(110);
-				let cargoTypeDataExtraBuff = BrowserBuffer.Buffer.Buffer.from(cargoTypeDataExtra);
-				cargoTypeSizes[i + j] = cargoTypeDataExtraBuff.readUIntLE(0, 8);
+
+			cLog(3, `getCargoTypeSizes: Fetching info for a slice of ${publicKeysSlice.length} keys`);
+
+			try {
+				let cargoTypeAccts = await solanaReadConnection.getMultipleAccountsInfo(publicKeysSlice);
+
+				if (!cargoTypeAccts) {
+					cLog(1, `ERROR: getMultipleAccountsInfo returned undefined for keys: ${publicKeysSlice.toString()}`);
+					continue;
+				}
+				cLog(3, `getCargoTypeSizes: Successfully received ${cargoTypeAccts.length} accounts`);
+
+				for(let j=0; j < cargoTypeAccts.length; j++) {
+					if (cargoTypeAccts[j] && cargoTypeAccts[j].data) {
+						let cargoTypeDataExtra = cargoTypeAccts[j].data.subarray(110);
+						let cargoTypeDataExtraBuff = BrowserBuffer.Buffer.Buffer.from(cargoTypeDataExtra);
+						cargoTypeSizes[i + j] = cargoTypeDataExtraBuff.readUIntLE(0, 8);
+					} else {
+						cLog(1, `ERROR: Missing data for account at index ${j} in slice starting at index ${i}`);
+					}
+				}
+			} catch (error) {
+				cLog(1, `CRITICAL ERROR in getCargoTypeSizes: Failed to fetch account info.`, error);
 			}
 		}
 		return cargoTypeSizes;
 	}
-	async function getResourceTokens() {
-		mineItems = await sageProgram.account.mineItem.all();
-		craftableItems = await craftingProgram.account.craftableItem.all();
 
-		let cargoTypeSizes = await getCargoTypeSizes(cargoTypes);
-		for (let resource of mineItems) {
-			let cargoTypeIndex = cargoTypes.findIndex(item => item.account.mint.toString() === resource.account.mint.toString());
-			let cargoName = (new TextDecoder().decode(new Uint8Array(resource.account.name)).replace(/\0/g, ''));
-			let cargoSize = cargoTypeSizes[cargoTypeIndex];
-			if(cargoSize !== undefined)
-			{
-				cargoItems.push({'name': cargoName, 'token': resource.account.mint.toString(), 'size': cargoSize});
+	async function getResourceTokens() {
+		cLog(0, 'getResourceTokens: Starting...');
+		try {
+
+			mineItems = await sageProgram.account.mineItem.all();
+			cLog(3, `getResourceTokens: Found ${mineItems.length} mine items`);
+
+			craftableItems = await craftingProgram.account.craftableItem.all();
+			cLog(3, `getResourceTokens: Found ${craftableItems.length} craftable items`);
+
+
+			let cargoTypeSizes = await getCargoTypeSizes(cargoTypes);
+			for (let resource of mineItems) {
+				let cargoTypeIndex = cargoTypes.findIndex(item => item.account.mint.toString() === resource.account.mint.toString());
+				let cargoName = (new TextDecoder().decode(new Uint8Array(resource.account.name)).replace(/\0/g, ''));
+				let cargoSize = cargoTypeSizes[cargoTypeIndex];
+				if(cargoSize !== undefined)
+				{
+					cargoItems.push({'name': cargoName, 'token': resource.account.mint.toString(), 'size': cargoSize});
+				}
 			}
-		}
-		for (let craftable of craftableItems) {
-			let cargoTypeIndex = cargoTypes.findIndex(item => item.account.mint.toString() === craftable.account.mint.toString());
-			let cargoName = (new TextDecoder().decode(new Uint8Array(craftable.account.namespace)).replace(/\0/g, ''));
-			let cargoSize = cargoTypeSizes[cargoTypeIndex];
-			if(cargoSize !== undefined)
-			{
-				cargoItems.push({'name': cargoName, 'token': craftable.account.mint.toString(), 'size': cargoSize});
+			for (let craftable of craftableItems) {
+				let cargoTypeIndex = cargoTypes.findIndex(item => item.account.mint.toString() === craftable.account.mint.toString());
+				let cargoName = (new TextDecoder().decode(new Uint8Array(craftable.account.namespace)).replace(/\0/g, ''));
+				let cargoSize = cargoTypeSizes[cargoTypeIndex];
+				if(cargoSize !== undefined)
+				{
+					cargoItems.push({'name': cargoName, 'token': craftable.account.mint.toString(), 'size': cargoSize});
+				}
 			}
+			cargoItems.sort(function (a, b) { return a.name.toUpperCase().localeCompare(b.name.toUpperCase()); });
+		} catch (error) {
+			cLog(1, `CRITICAL ERROR in getResourceTokens: `, error);
 		}
-		cargoItems.sort(function (a, b) { return a.name.toUpperCase().localeCompare(b.name.toUpperCase()); });
 	}
 
 
@@ -819,15 +856,36 @@
 
 		let publicKeys = [];
 		let recipeDatas = [];
+
+		cLog(2, `getCraftRecipes: Found ${allCraftRecipes.length} recipes.`);
+
 		for(let i=0; i < allCraftRecipes.length; i++) {
 			publicKeys.push(allCraftRecipes[i].publicKey);
 		}
 		// 100 is the max data size of getMultipleAccountsInfo
 		for (let i = 0; i < publicKeys.length; i += 100) {
 			let publicKeysSlice = publicKeys.slice(i, i + 100);
-			let recipeAcctInfos = await solanaReadConnection.getMultipleAccountsInfo(publicKeysSlice);
-			for(let j=0; j < recipeAcctInfos.length; j++) {
-				recipeDatas[i + j] = recipeAcctInfos[j].data.subarray(223);
+
+			cLog(3, `getCraftRecipes: Fetching recipe data for a slice of ${publicKeysSlice.length} keys`);
+
+			try {
+				let recipeAcctInfos = await solanaReadConnection.getMultipleAccountsInfo(publicKeysSlice);
+
+				if (!recipeAcctInfos) {
+					cLog(1, `ERROR: getMultipleAccountsInfo returned undefined for keys: ${publicKeysSlice.toString()}`);
+					continue;
+				}
+				cLog(3, `getCraftRecipes: Successfully received ${recipeAcctInfos.length} account infos`);
+
+				for(let j=0; j < recipeAcctInfos.length; j++) {
+					if (recipeAcctInfos[j] && recipeAcctInfos[j].data) {
+						recipeDatas[i + j] = recipeAcctInfos[j].data.subarray(223);
+					} else {
+						cLog(1, `ERROR: Missing data for recipe account at index ${j} in slice starting at index ${i}`);
+					}
+				}
+			} catch (error) {
+				cLog(1, `CRITICAL ERROR in getCraftRecipes: Failed to fetch account info.`, error);
 			}
 		}
 
@@ -837,13 +895,17 @@
 			let recipeInputOutput = [];
 			let recipeData = recipeDatas[recipeIdx];
 			let recipeIter = 0;
-			while (recipeData.length >= 40) {
-				let currIngredient = recipeData.subarray(0, 40);
-				let ingredientDecoded = craftingProgram.coder.types.decode('RecipeInputsOutputs', currIngredient);
-				recipeInputOutput.push({mint: ingredientDecoded.mint, amount: ingredientDecoded.amount.toNumber(), idx: recipeIter});
-				recipeData = recipeData.subarray(40);
-				recipeIter += 1;
+
+			if (recipeData) {
+				while (recipeData.length >= 40) {
+					let currIngredient = recipeData.subarray(0, 40);
+					let ingredientDecoded = craftingProgram.coder.types.decode('RecipeInputsOutputs', currIngredient);
+					recipeInputOutput.push({mint: ingredientDecoded.mint, amount: ingredientDecoded.amount.toNumber(), idx: recipeIter});
+					recipeData = recipeData.subarray(40);
+					recipeIter += 1;
+				}
 			}
+
 			if (craftRecipe.account.category.toString() === upgradeCategory.publicKey.toString()) {
 				upgradeRecipes.push({'name': recipeName, 'publicKey': craftRecipe.publicKey, 'category': craftRecipe.account.category, 'domain': craftRecipe.account.domain, 'feeRecipient': craftRecipe.account.feeRecipient.key, 'duration': craftRecipe.account.duration.toNumber(), 'input': recipeInputOutput, 'output': []});
 			} else {
@@ -1640,7 +1702,7 @@
 					instructions,
 				}).compileToV0Message(addressLookupTables);
 				let tx = new solanaWeb3.VersionedTransaction(messageV0);
-                if (extraSigner) tx.sign([extraSigner]);
+				if (extraSigner) tx.sign([extraSigner]);
 				let txSigned = null;
 				cLog(4,`${FleetTimeStamp(fleetName)} <${opName}> tx: `, tx);
 
