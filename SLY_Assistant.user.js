@@ -5568,7 +5568,7 @@
 						else await wait(5000);
 						if(userFleets[i].stopping) return;
 					}
-					await wait(2000); //Extra wait to ensure accuracy
+					await wait(4000); //Extra wait to ensure accuracy
 
 					const fleetPK = userFleets[i].publicKey.toString();
 					const fleetSavedData = await GM.getValue(fleetPK, '{}');
